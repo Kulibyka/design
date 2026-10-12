@@ -1,40 +1,128 @@
-# Домашнее задание 02. REST API сервиса электронной почты
+# Домашнее задание 03. PostgreSQL для сервиса электронной почты
 
 Вариант 9. Приложение содержит пользователей, почтовые папки и сообщения.
 Реализованы все восемь операций варианта и вход пользователя.
 
-Используются Python 3.12, FastAPI и Pydantic. Данные хранятся в словарях в памяти,
-как разрешено в задании. Это один учебный сервис. Имена ресурсов и поля взяты
-из описания проекта в домашней работе 01.
+Используются Python 3.12, FastAPI, Pydantic, PostgreSQL 16 и драйвер psycopg.
+Пользователи, папки и письма из домашней работы 02 теперь хранятся в PostgreSQL.
+Это один учебный сервис с обычными SQL-запросами. Пути API и форматы ответов сохранены.
 
-## Запуск
+## Запуск API и PostgreSQL через Docker
 
-Из корня проекта:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload
-```
-
-В Windows вместо `source .venv/bin/activate` используется `.venv\Scripts\activate`.
-
-API слушает порт 8000. Swagger UI доступен по пути `/docs`,
-JSON-спецификация — `/openapi.json`. В Swagger можно зарегистрироваться,
-выполнить вход и вставить значение `access_token` в окно **Authorize**.
-
-## Запуск через Docker
+Из корня проекта, где находится `docker-compose.yaml`:
 
 ```bash
 docker compose up --build
 ```
 
-Порт API — 8000. Остановить контейнер:
+Запускаются контейнеры `api` и `db`. API слушает порт 8000, PostgreSQL — 5432.
+База называется `maildb`, пользователь — `mail`, пароль учебной базы — `mail_password`.
+API ждёт готовности PostgreSQL перед запуском.
+
+При первом запуске в пустой базе автоматически выполняются `schema.sql` и `data.sql`.
+Создаются таблицы, индексы и по 10 записей в каждой таблице. Можно войти под
+логином `user01` с паролем `example-password`; у него уже есть папка «Входящие» и письмо.
+
+Данные PostgreSQL сохраняются в Docker volume `postgres_data`. Обычная остановка
+сохраняет этот volume:
 
 ```bash
 docker compose down
 ```
+
+Для полного сброса учебной базы используется `docker compose down -v`:
+эта команда удаляет данные. При следующем запуске SQL-файлы выполнятся заново.
+
+При непустом volume SQL-файлы автоматически повторно не выполняются.
+Применить их вручную к базе текущего проекта можно так:
+
+```bash
+docker compose exec -T db psql -U mail -d maildb -v ON_ERROR_STOP=1 < schema.sql
+docker compose exec -T db psql -U mail -d maildb -v ON_ERROR_STOP=1 < data.sql
+```
+
+Эти команды работают в Bash и cmd.exe. Повторный запуск `data.sql` не добавляет дубликаты.
+
+Swagger UI доступен по пути `/docs`,
+JSON-спецификация — `/openapi.json`. В Swagger можно зарегистрироваться,
+выполнить вход и вставить значение `access_token` в окно **Authorize**.
+
+## Локальный запуск API
+
+PostgreSQL можно оставить в Docker, а API запустить из Python:
+
+```bash
+docker compose up -d db
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+export DATABASE_URL="postgresql://mail:mail_password@localhost:5432/maildb"
+uvicorn main:app --reload
+```
+
+В cmd.exe активация и переменная задаются так:
+
+```cmd
+.venv\Scripts\activate
+set "DATABASE_URL=postgresql://mail:mail_password@localhost:5432/maildb"
+```
+
+По умолчанию Python использует этот же адрес БД. При запуске API в Docker
+Compose вместо `localhost` указывается имя контейнера `db`.
+
+## Схема базы данных
+
+Связи: один пользователь имеет несколько папок, одна папка — несколько писем.
+
+### users
+
+| Колонка | Тип | Ограничения и значение по умолчанию |
+| --- | --- | --- |
+| `id` | `UUID` | PK, `gen_random_uuid()` |
+| `login` | `TEXT` | NOT NULL, UNIQUE, CHECK: непустой, в нижнем регистре, без пробелов по краям |
+| `first_name` | `TEXT` | NOT NULL, CHECK: непустой |
+| `last_name` | `TEXT` | NOT NULL, CHECK: непустой |
+| `password_hash` | `TEXT` | NOT NULL, CHECK: непустой |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` |
+
+### folders
+
+| Колонка | Тип | Ограничения и значение по умолчанию |
+| --- | --- | --- |
+| `id` | `UUID` | PK, `gen_random_uuid()` |
+| `user_id` | `UUID` | NOT NULL, FK → `users.id` |
+| `name` | `TEXT` | NOT NULL, CHECK: непустой, UNIQUE вместе с `user_id` |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` |
+
+### messages
+
+| Колонка | Тип | Ограничения и значение по умолчанию |
+| --- | --- | --- |
+| `code` | `UUID` | PK, `gen_random_uuid()` |
+| `folder_id` | `UUID` | NOT NULL, FK → `folders.id` |
+| `subject` | `TEXT` | NOT NULL, CHECK: непустой |
+| `body` | `TEXT` | NOT NULL, CHECK: непустой |
+| `recipient_address` | `TEXT` | NOT NULL, CHECK: адрес с `@`, доменом и без пробелов |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` |
+
+Проверки имён, логина, названия папки, темы и текста учитывают строки из одних пробелов. Более подробную
+проверку адреса получателя выполняет Pydantic в API. Внешние ключи не позволяют
+создать папку без пользователя или письмо без папки.
+
+PK и UNIQUE автоматически создают индексы. Дополнительно созданы два индекса
+для поиска по началу имени и фамилии и индекс `(folder_id, created_at, code)`
+для чтения писем папки. Обоснование каждого индекса и реальные планы запросов
+до и после оптимизации находятся в `optimization.md`.
+
+В `queries.sql` есть все восемь операций варианта с конкретными примерами.
+Проверить их можно командой:
+
+```bash
+docker compose exec -T db psql -U mail -d maildb -v ON_ERROR_STOP=1 < queries.sql
+```
+
+Демонстрационные записи откатываются через `ROLLBACK`. В API SQL-запросы
+параметризованы; значения пользователя не подставляются в текст SQL.
 
 ## Данные и правила
 
@@ -240,14 +328,28 @@ curl -i http://localhost:8000/api/v1/folders
 
 ## Тесты и спецификация
 
+Тесты работают с отдельной PostgreSQL-базой `maildb_test`. Создать её нужно один раз:
+
+```bash
+docker compose up -d db
+docker compose exec db createdb -U mail maildb_test
+```
+
+После активации виртуального окружения:
+
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
+Схема тестовой БД создаётся автоматически. Перед каждым тестом её таблицы очищаются.
+Если нужен другой сервер, укажите `TEST_DATABASE_URL`; имя базы должно оканчиваться
+на `_test`. Рабочая `maildb` тестами не очищается.
+
 Тесты проверяют все операции, поиск по маскам, уникальность логина и папки,
 невалидные данные, отсутствующие ресурсы, неверные и истёкшие токены,
-недоступность чужих папок и писем, Swagger и соответствие файла OpenAPI серверу.
+недоступность чужих папок и писем, ограничения PostgreSQL, сохранение данных
+после потери сессии, Swagger и соответствие файла OpenAPI серверу.
 
 `openapi.yaml` содержит параметры, модели запросов/ответов, примеры и схему
 Bearer-аутентификации. Пересоздать спецификацию после изменения API:
@@ -258,15 +360,22 @@ python generate_openapi.py
 
 ## Ограничения учебного решения
 
-Данные и токены теряются при перезапуске сервера. Нужен один процесс Uvicorn:
-несколько workers не разделяют словари. Письмо сохраняется в папке;
-доставка через SMTP и интеграция с Outlook в задание не входят.
+Пользователи, папки и письма сохраняются в PostgreSQL и переживают перезапуск API.
+Сессионные токены остались в памяти: после перезапуска API нужен повторный вход.
+Нужен один процесс Uvicorn, поскольку несколько workers не разделяют сессии.
+Письмо сохраняется в папке; доставка через SMTP и интеграция с Outlook в задание не входят.
+Опциональное партиционирование не используется: для этой учебной базы оно не требуется.
 
 ## Файлы проекта
 
 ```text
-main.py                  # endpoints, middleware и хранилище
+main.py                  # endpoints, middleware и SQL-запросы
+database.py              # подключение psycopg
 models.py                # DTO запросов и ответов
+schema.sql               # таблицы, ограничения и индексы
+data.sql                 # по 10 тестовых записей на таблицу
+queries.sql              # все операции варианта
+optimization.md          # объяснение индексов и планы EXPLAIN
 requirements.txt         # зависимости сервиса
 requirements-dev.txt     # зависимости тестов и генератора спецификации
 generate_openapi.py      # сохранение спецификации

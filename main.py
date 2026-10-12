@@ -1,10 +1,9 @@
 """Учебный REST API: пользователи, почтовые папки и письма."""
 
 from datetime import datetime, timedelta, timezone
-import re
 import secrets
 from urllib.parse import urlencode
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -13,6 +12,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
+from psycopg.errors import UniqueViolation
+
+from database import get_connection
 
 from models import (
     ErrorResponse, FolderCreate, FolderResponse, LoginRequest, MessageCreate,
@@ -22,14 +24,11 @@ from models import (
 
 app = FastAPI(
     title="Электронная почта — вариант 9",
-    description="Домашнее задание 02. Пользователи, папки и письма хранятся в памяти.",
+    description="Домашнее задание 03. Пользователи, папки и письма хранятся в PostgreSQL.",
     version="1.0.0",
 )
 
-# После перезапуска сервера данные и сессии теряются.
-users: dict[UUID, dict] = {}
-folders: dict[UUID, FolderResponse] = {}
-messages: dict[UUID, MessageResponse] = {}
+# Сессии остались в памяти: после перезапуска API нужно войти заново.
 sessions: dict[str, dict] = {}
 
 password_hasher = PasswordHasher()
@@ -81,19 +80,23 @@ def public_user(user: dict) -> UserResponse:
 
 
 def find_user(login: str) -> dict | None:
-    login = login.strip().lower()
-    return next((user for user in users.values() if user["login"] == login), None)
+    with get_connection() as connection:
+        return connection.execute(
+            "SELECT * FROM users WHERE login = %s", (login.strip().lower(),),
+        ).fetchone()
 
 
-def matches_mask(value: str, mask: str) -> bool:
-    # Только * и ? имеют специальное значение; остальные символы буквальные.
-    pattern = re.escape(mask.casefold()).replace(r"\*", ".*").replace(r"\?", ".")
-    return re.fullmatch(pattern, value.casefold(), flags=re.DOTALL) is not None
+def mask_to_like(mask: str) -> str:
+    # В LIKE символы % и _ специальные, поэтому исходные символы экранируются.
+    return (mask.lower().replace("\\", "\\\\").replace("%", "\\%")
+            .replace("_", "\\_").replace("*", "%").replace("?", "_"))
 
 
-def get_owned_folder(folder_id: UUID, user_id: UUID) -> FolderResponse:
-    folder = folders.get(folder_id)
-    if folder is None or folder.user_id != user_id:
+def get_owned_folder(connection, folder_id: UUID, user_id: UUID) -> dict:
+    folder = connection.execute(
+        "SELECT * FROM folders WHERE id = %s AND user_id = %s", (folder_id, user_id),
+    ).fetchone()
+    if folder is None:
         raise HTTPException(status_code=404, detail="Папка не найдена")
     return folder
 
@@ -103,18 +106,16 @@ def get_owned_folder(folder_id: UUID, user_id: UUID) -> FolderResponse:
     tags=["Пользователи"], summary="Создать пользователя (регистрация)",
     responses={**INVALID_DATA, **CONFLICT},
 )
-async def create_user(data: UserCreate, response: Response):
-    if find_user(data.login):
+def create_user(data: UserCreate, response: Response):
+    try:
+        with get_connection() as connection:
+            user = connection.execute(
+                """INSERT INTO users (login, first_name, last_name, password_hash)
+                   VALUES (%s, %s, %s, %s) RETURNING *""",
+                (data.login.lower(), data.first_name, data.last_name, password_hasher.hash(data.password)),
+            ).fetchone()
+    except UniqueViolation:
         raise HTTPException(status_code=409, detail="Логин уже занят")
-    user = {
-        "id": uuid4(),
-        "login": data.login.lower(),
-        "first_name": data.first_name,
-        "last_name": data.last_name,
-        "password_hash": password_hasher.hash(data.password),
-        "created_at": datetime.now(timezone.utc),
-    }
-    users[user["id"]] = user
     response.headers["Location"] = "/api/v1/users/by-login?" + urlencode({"login": user["login"]})
     return public_user(user)
 
@@ -124,7 +125,7 @@ async def create_user(data: UserCreate, response: Response):
     tags=["Аутентификация"], summary="Войти и получить сессионный токен",
     responses={**INVALID_DATA, **UNAUTHORIZED},
 )
-async def login(data: LoginRequest):
+def login(data: LoginRequest):
     user = find_user(data.login)
     valid_password = False
     if user:
@@ -158,7 +159,7 @@ api = APIRouter(
     tags=["Пользователи"], summary="Найти пользователя по логину",
     responses={**INVALID_DATA, **NOT_FOUND},
 )
-async def get_user_by_login(login: str = Query(min_length=1, description="Логин без учёта регистра")):
+def get_user_by_login(login: str = Query(min_length=1, description="Логин без учёта регистра")):
     user = find_user(login)
     if user is None:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
@@ -170,7 +171,7 @@ async def get_user_by_login(login: str = Query(min_length=1, description="Лог
     tags=["Пользователи"], summary="Найти пользователей по маске имени и фамилии",
     responses=INVALID_DATA,
 )
-async def search_users(
+def search_users(
     first_name_mask: str | None = Query(default=None, min_length=1, description="Маска имени: * — любое число символов, ? — один"),
     last_name_mask: str | None = Query(default=None, min_length=1, description="Маска фамилии: * — любое число символов, ? — один"),
 ):
@@ -178,12 +179,19 @@ async def search_users(
         raise HTTPException(status_code=400, detail="Укажите маску имени или фамилии")
     if any(mask is not None and not mask.strip() for mask in (first_name_mask, last_name_mask)):
         raise HTTPException(status_code=400, detail="Маска не должна быть пустой")
-    found = [
-        public_user(user) for user in users.values()
-        if (first_name_mask is None or matches_mask(user["first_name"], first_name_mask))
-        and (last_name_mask is None or matches_mask(user["last_name"], last_name_mask))
-    ]
-    return sorted(found, key=lambda user: user.login)
+    conditions = []
+    parameters = []
+    if first_name_mask is not None:
+        conditions.append("lower(first_name) LIKE %s")
+        parameters.append(mask_to_like(first_name_mask))
+    if last_name_mask is not None:
+        conditions.append("lower(last_name) LIKE %s")
+        parameters.append(mask_to_like(last_name_mask))
+    query = ("SELECT id, login, first_name, last_name, created_at FROM users WHERE "
+             + " AND ".join(conditions) + " ORDER BY login")
+    with get_connection() as connection:
+        found = connection.execute(query, parameters).fetchall()
+    return [public_user(user) for user in found]
 
 
 @api.post(
@@ -191,22 +199,27 @@ async def search_users(
     tags=["Папки"], summary="Создать почтовую папку",
     responses={**INVALID_DATA, **CONFLICT},
 )
-async def create_folder(data: FolderCreate, request: Request):
-    user_id = request.state.user_id
-    if any(folder.user_id == user_id and folder.name == data.name for folder in folders.values()):
+def create_folder(data: FolderCreate, request: Request):
+    try:
+        with get_connection() as connection:
+            return connection.execute(
+                "INSERT INTO folders (user_id, name) VALUES (%s, %s) RETURNING *",
+                (request.state.user_id, data.name),
+            ).fetchone()
+    except UniqueViolation:
         raise HTTPException(status_code=409, detail="Папка с таким именем уже существует")
-    folder = FolderResponse(id=uuid4(), user_id=user_id, name=data.name, created_at=datetime.now(timezone.utc))
-    folders[folder.id] = folder
-    return folder
 
 
 @api.get(
     "/folders", response_model=list[FolderResponse],
     tags=["Папки"], summary="Получить все папки текущего пользователя",
 )
-async def get_folders(request: Request):
-    owned = [folder for folder in folders.values() if folder.user_id == request.state.user_id]
-    return sorted(owned, key=lambda folder: (folder.name, str(folder.id)))
+def get_folders(request: Request):
+    with get_connection() as connection:
+        return connection.execute(
+            "SELECT * FROM folders WHERE user_id = %s ORDER BY name, id",
+            (request.state.user_id,),
+        ).fetchall()
 
 
 @api.post(
@@ -214,14 +227,15 @@ async def get_folders(request: Request):
     tags=["Письма"], summary="Создать письмо в папке",
     responses={**INVALID_DATA, **NOT_FOUND},
 )
-async def create_message(folder_id: UUID, data: MessageCreate, request: Request, response: Response):
-    get_owned_folder(folder_id, request.state.user_id)
-    message = MessageResponse(
-        code=uuid4(), folder_id=folder_id, **data.model_dump(),
-        created_at=datetime.now(timezone.utc),
-    )
-    messages[message.code] = message
-    response.headers["Location"] = f"/api/v1/messages/{message.code}"
+def create_message(folder_id: UUID, data: MessageCreate, request: Request, response: Response):
+    with get_connection() as connection:
+        get_owned_folder(connection, folder_id, request.state.user_id)
+        message = connection.execute(
+            """INSERT INTO messages (folder_id, subject, body, recipient_address)
+               VALUES (%s, %s, %s, %s) RETURNING *""",
+            (folder_id, data.subject, data.body, str(data.recipient_address)),
+        ).fetchone()
+    response.headers["Location"] = f"/api/v1/messages/{message['code']}"
     return message
 
 
@@ -230,10 +244,16 @@ async def create_message(folder_id: UUID, data: MessageCreate, request: Request,
     tags=["Письма"], summary="Получить все письма в папке",
     responses={**INVALID_DATA, **NOT_FOUND},
 )
-async def get_messages(folder_id: UUID, request: Request):
-    get_owned_folder(folder_id, request.state.user_id)
-    found = [message for message in messages.values() if message.folder_id == folder_id]
-    return sorted(found, key=lambda message: (message.created_at, str(message.code)))
+def get_messages(folder_id: UUID, request: Request):
+    with get_connection() as connection:
+        get_owned_folder(connection, folder_id, request.state.user_id)
+        return connection.execute(
+            """SELECT m.* FROM messages AS m
+               JOIN folders AS f ON f.id = m.folder_id
+               WHERE m.folder_id = %s AND f.user_id = %s
+               ORDER BY m.created_at, m.code""",
+            (folder_id, request.state.user_id),
+        ).fetchall()
 
 
 @api.get(
@@ -241,10 +261,15 @@ async def get_messages(folder_id: UUID, request: Request):
     tags=["Письма"], summary="Получить письмо по коду",
     responses={**INVALID_DATA, **NOT_FOUND},
 )
-async def get_message(code: UUID, request: Request):
-    message = messages.get(code)
-    folder = folders.get(message.folder_id) if message else None
-    if folder is None or folder.user_id != request.state.user_id:
+def get_message(code: UUID, request: Request):
+    with get_connection() as connection:
+        message = connection.execute(
+            """SELECT m.* FROM messages AS m
+               JOIN folders AS f ON f.id = m.folder_id
+               WHERE m.code = %s AND f.user_id = %s""",
+            (code, request.state.user_id),
+        ).fetchone()
+    if message is None:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
     return message
 

@@ -1,5 +1,30 @@
 services:
   api:
     build: .
+    environment:
+      DATABASE_URL: postgresql://mail:mail_password@db:5432/maildb
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: maildb
+      POSTGRES_USER: mail
+      POSTGRES_PASSWORD: mail_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./data.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U mail -d maildb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
