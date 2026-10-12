@@ -9,8 +9,8 @@
 {
     _id: "10000000-0000-4000-8000-000000000001",
     login: "user01",
-    first_name: "Иван",
-    last_name: "Петров",
+    first_name: "Ivan",
+    last_name: "Petrov",
     password_hash: "$argon2id$v=19$m=65536,t=3,p=4$cjrweZivnffTJhze9PgvSg$luEiJ2OeKObGJmBAkKnjePH4CycsfgI4pcweBQTL6Ls",
     created_at: ISODate("2026-10-12T12:00:00Z")
 }
@@ -27,7 +27,7 @@
 {
     _id: "20000000-0000-4000-8000-000000000001",
     user_id: "10000000-0000-4000-8000-000000000001",
-    name: "Входящие",
+    name: "Inbox",
     created_at: ISODate("2026-10-12T12:00:00Z")
 }
 ```

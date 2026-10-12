@@ -1,4 +1,4 @@
-// Скрипт выполняется в выбранной базе: mongosh maildb --file validation.js.
+// Скрипт выполняется в выбранной базе: mongosh maildb --file mongodb/validation.js.
 const uuidString = {
     bsonType: "string",
     pattern: "^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$"

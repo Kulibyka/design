@@ -1,10 +1,10 @@
 // По 10 документов в каждой коллекции. Пароль пользователей: example-password.
 const seedPasswordHash = "$argon2id$v=19$m=65536,t=3,p=4$cjrweZivnffTJhze9PgvSg$luEiJ2OeKObGJmBAkKnjePH4CycsfgI4pcweBQTL6Ls";
 const seedNames = [
-    ["Иван", "Петров"], ["Анна", "Иванова"], ["Пётр", "Сидоров"],
-    ["Мария", "Смирнова"], ["Алексей", "Кузнецов"], ["Елена", "Попова"],
-    ["Дмитрий", "Васильев"], ["Ольга", "Соколова"], ["Сергей", "Михайлов"],
-    ["Наталья", "Фёдорова"]
+    ["Ivan", "Petrov"], ["Anna", "Ivanova"], ["Petr", "Sidorov"],
+    ["Maria", "Smirnova"], ["Alexey", "Kuznetsov"], ["Elena", "Popova"],
+    ["Dmitry", "Vasilyev"], ["Olga", "Sokolova"], ["Sergey", "Mikhailov"],
+    ["Natalia", "Fedorova"]
 ];
 
 for (let n = 1; n <= 10; n++) {
@@ -25,13 +25,13 @@ for (let n = 1; n <= 10; n++) {
     }}, {upsert: true});
 
     db.folders.updateOne({_id: folderId}, {$setOnInsert: {
-        _id: folderId, user_id: userId, name: "Входящие", created_at: createdAt
+        _id: folderId, user_id: userId, name: "Inbox", created_at: createdAt
     }}, {upsert: true});
 
     db.messages.updateOne({_id: messageCode}, {$setOnInsert: {
         _id: messageCode,
         folder_id: folderId,
-        content: {subject: "Тестовое письмо " + n, body: body},
+        content: {subject: "Test message " + n, body: body},
         recipients: ["teacher@example.com"],
         size_bytes: NumberInt(body.length), // Текст примера ASCII: символы равны байтам UTF-8.
         created_at: createdAt

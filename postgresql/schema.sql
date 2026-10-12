@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
 -- Индексы PK и UNIQUE PostgreSQL создаёт автоматически.
 -- UNIQUE (user_id, name) также покрывает FK folders.user_id и поиск папок владельца.
 
--- Поиск по маске с известным началом строки: lower(first_name) LIKE 'иван%'.
+-- Поиск по маске с известным началом строки: lower(first_name) LIKE 'ivan%'.
 CREATE INDEX IF NOT EXISTS idx_users_first_name
     ON users (lower(first_name) text_pattern_ops);
 CREATE INDEX IF NOT EXISTS idx_users_last_name

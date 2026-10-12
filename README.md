@@ -17,11 +17,11 @@ docker compose up --build
 
 Запускаются сервисы `api` и `mongo`. API слушает порт 8000, MongoDB — 27017.
 API ждёт готовности MongoDB. При первом запуске в пустом MongoDB volume
-автоматически выполняются `validation.js` и `data.js`: создаются база `maildb`,
+автоматически выполняются `mongodb/validation.js` и `mongodb/data.js`: создаются база `maildb`,
 коллекции, валидаторы, индексы и по 10 документов в каждой коллекции.
 
 Можно войти под логином `user01` с паролем `example-password`.
-У пользователя уже есть папка «Входящие» и одно письмо.
+У пользователя уже есть папка «Inbox» и одно письмо.
 
 Swagger UI доступен по пути `/docs`, спецификация — `/openapi.json`.
 В Swagger можно зарегистрироваться, выполнить вход и вставить `access_token`
@@ -68,7 +68,7 @@ set "MONGO_DB=maildb"
 
 Это же подключение используется Python по умолчанию. В контейнере API имя
 сервера в `MONGO_URI` — `mongo`. Для другого сервера задайте переменную перед
-запуском Python и примените `validation.js` к выбранной базе.
+запуском Python и примените `mongodb/validation.js` к выбранной базе.
 
 ## Коллекции MongoDB
 
@@ -81,9 +81,9 @@ set "MONGO_DB=maildb"
 UUID хранятся как String, даты — Date, содержимое письма — вложенный Object,
 адрес получателя — Array из одной строки, размер текста в UTF-8 — Number.
 `user_id` ссылается на пользователя, `folder_id` — на папку.
-Обоснование embedded/references и примеры документов находятся в `schema_design.md`.
+Обоснование embedded/references и примеры документов находятся в `mongodb/schema_design.md`.
 
-В `validation.js` заданы `$jsonSchema`, обязательные поля, BSON-типы,
+В `mongodb/validation.js` заданы `$jsonSchema`, обязательные поля, BSON-типы,
 ограничения строк, массива и числа. Скрипт создаёт уникальные индексы логина
 и имени папки у владельца, а также индекс чтения писем папки.
 
@@ -95,7 +95,7 @@ UUID хранятся как String, даты — Date, содержимое п�
 docker compose exec mongo mongosh maildb
 ```
 
-Выполнить `queries.js`:
+Выполнить `mongodb/queries.js`:
 
 ```bash
 docker compose exec -T mongo mongosh --quiet maildb --file /scripts/queries.js
@@ -113,7 +113,7 @@ HTTP API сохраняет набор операций выбранного в�
 
 ## Материалы предыдущего задания
 
-`schema.sql`, `data.sql`, `queries.sql`, `optimization.md` сохранены для работы 03.
+`postgresql/schema.sql`, `postgresql/data.sql`, `postgresql/queries.sql`, `postgresql/optimization.md` сохранены для работы 03.
 PostgreSQL остаётся отдельным сервисом в профиле `postgres`:
 
 ```bash
@@ -185,7 +185,7 @@ docker compose --profile postgres up -d db
 ```bash
 curl -i -X POST http://localhost:8000/api/v1/users \
   -H 'Content-Type: application/json' \
-  -d '{"login":"ivan","first_name":"Иван","last_name":"Петров","password":"example-password"}'
+  -d '{"login":"ivan","first_name":"Ivan","last_name":"Petrov","password":"example-password"}'
 ```
 
 Ответ `201 Created`:
@@ -194,8 +194,8 @@ curl -i -X POST http://localhost:8000/api/v1/users \
 {
   "id": "11111111-1111-4111-8111-111111111111",
   "login": "ivan",
-  "first_name": "Иван",
-  "last_name": "Петров",
+  "first_name": "Ivan",
+  "last_name": "Petrov",
   "created_at": "2026-10-12T12:00:00Z"
 }
 ```
@@ -217,7 +217,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 Сохраните полученный токен в переменную:
 
 ```bash
-TOKEN='вставьте access_token из ответа'
+TOKEN='PASTE_ACCESS_TOKEN_HERE'
 ```
 
 ### Поиск пользователя по логину
@@ -234,13 +234,13 @@ curl --get http://localhost:8000/api/v1/users/by-login \
 ```bash
 curl --get http://localhost:8000/api/v1/users \
   -H "Authorization: Bearer $TOKEN" \
-  --data-urlencode 'first_name_mask=Ив*' --data-urlencode 'last_name_mask=Пет?ов'
+  --data-urlencode 'first_name_mask=Iv*' --data-urlencode 'last_name_mask=Pet?ov'
 ```
 
 Ответ `200 OK` — массив объектов пользователя:
 
 ```json
-[{"id":"11111111-1111-4111-8111-111111111111","login":"ivan","first_name":"Иван","last_name":"Петров","created_at":"2026-10-12T12:00:00Z"}]
+[{"id":"11111111-1111-4111-8111-111111111111","login":"ivan","first_name":"Ivan","last_name":"Petrov","created_at":"2026-10-12T12:00:00Z"}]
 ```
 
 ### Создание папки
@@ -248,13 +248,13 @@ curl --get http://localhost:8000/api/v1/users \
 ```bash
 curl -i -X POST http://localhost:8000/api/v1/folders \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"Учёба"}'
+  -d '{"name":"Study"}'
 ```
 
 Ответ `201 Created`:
 
 ```json
-{"id":"22222222-2222-4222-8222-222222222222","user_id":"11111111-1111-4111-8111-111111111111","name":"Учёба","created_at":"2026-10-12T12:00:00Z"}
+{"id":"22222222-2222-4222-8222-222222222222","user_id":"11111111-1111-4111-8111-111111111111","name":"Study","created_at":"2026-10-12T12:00:00Z"}
 ```
 
 ### Список папок
@@ -266,22 +266,22 @@ curl http://localhost:8000/api/v1/folders -H "Authorization: Bearer $TOKEN"
 Ответ `200 OK` — массив папок:
 
 ```json
-[{"id":"22222222-2222-4222-8222-222222222222","user_id":"11111111-1111-4111-8111-111111111111","name":"Учёба","created_at":"2026-10-12T12:00:00Z"}]
+[{"id":"22222222-2222-4222-8222-222222222222","user_id":"11111111-1111-4111-8111-111111111111","name":"Study","created_at":"2026-10-12T12:00:00Z"}]
 ```
 
 ### Создание письма в папке
 
 ```bash
-FOLDER_ID='вставьте id созданной папки'
+FOLDER_ID='PASTE_FOLDER_ID_HERE'
 curl -i -X POST "http://localhost:8000/api/v1/folders/$FOLDER_ID/messages" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"subject":"Домашнее задание","body":"Отправляю описание архитектуры.","recipient_address":"teacher@example.com"}'
+  -d '{"subject":"Homework","body":"Project description.","recipient_address":"teacher@example.com"}'
 ```
 
 Ответ `201 Created`:
 
 ```json
-{"code":"33333333-3333-4333-8333-333333333333","folder_id":"22222222-2222-4222-8222-222222222222","subject":"Домашнее задание","body":"Отправляю описание архитектуры.","recipient_address":"teacher@example.com","created_at":"2026-10-12T12:00:00Z"}
+{"code":"33333333-3333-4333-8333-333333333333","folder_id":"22222222-2222-4222-8222-222222222222","subject":"Homework","body":"Project description.","recipient_address":"teacher@example.com","created_at":"2026-10-12T12:00:00Z"}
 ```
 
 ### Список писем папки
@@ -293,13 +293,13 @@ curl "http://localhost:8000/api/v1/folders/$FOLDER_ID/messages" -H "Authorizatio
 Ответ `200 OK` — массив писем, например:
 
 ```json
-[{"code":"33333333-3333-4333-8333-333333333333","folder_id":"22222222-2222-4222-8222-222222222222","subject":"Домашнее задание","body":"Отправляю описание архитектуры.","recipient_address":"teacher@example.com","created_at":"2026-10-12T12:00:00Z"}]
+[{"code":"33333333-3333-4333-8333-333333333333","folder_id":"22222222-2222-4222-8222-222222222222","subject":"Homework","body":"Project description.","recipient_address":"teacher@example.com","created_at":"2026-10-12T12:00:00Z"}]
 ```
 
 ### Получение письма по коду
 
 ```bash
-CODE='вставьте code созданного письма'
+CODE='PASTE_MESSAGE_CODE_HERE'
 curl "http://localhost:8000/api/v1/messages/$CODE" -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -374,10 +374,16 @@ python generate_openapi.py
 main.py                  # endpoints, middleware и запросы PyMongo
 database.py              # подключение MongoClient
 models.py                # прежние DTO запросов и ответов
-schema_design.md         # документная модель и обоснование связей
-validation.js            # коллекции, JSON Schema и индексы
-data.js                  # по 10 документов в коллекции
-queries.js               # операции варианта, Update/Delete и операторы
+mongodb/
+  schema_design.md       # документная модель и обоснование связей
+  validation.js          # коллекции, JSON Schema и индексы
+  data.js                # по 10 документов в коллекции
+  queries.js             # операции варианта, Update/Delete и операторы
+postgresql/              # материалы домашней работы 03
+  schema.sql             # таблицы, ограничения и индексы
+  data.sql               # по 10 записей в таблице
+  queries.sql            # восемь операций варианта
+  optimization.md        # сравнение планов EXPLAIN
 requirements.txt
 requirements-dev.txt
 generate_openapi.py
@@ -386,8 +392,4 @@ tests/test_api.py
 Dockerfile
 docker-compose.yaml
 README.md
-schema.sql               # материалы домашней работы 03
-data.sql
-queries.sql
-optimization.md
 ```

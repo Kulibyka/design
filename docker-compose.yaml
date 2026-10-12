@@ -17,9 +17,9 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
-      - ./validation.js:/docker-entrypoint-initdb.d/01-validation.js:ro
-      - ./data.js:/docker-entrypoint-initdb.d/02-data.js:ro
-      - ./queries.js:/scripts/queries.js:ro
+      - ./mongodb/validation.js:/docker-entrypoint-initdb.d/01-validation.js:ro
+      - ./mongodb/data.js:/docker-entrypoint-initdb.d/02-data.js:ro
+      - ./mongodb/queries.js:/scripts/queries.js:ro
     healthcheck:
       test: ["CMD-SHELL", "mongosh --host $$HOSTNAME --quiet --eval 'db.adminCommand({ping: 1})'"]
       interval: 5s
@@ -36,8 +36,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ./data.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
+      - ./postgresql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./postgresql/data.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h localhost -U mail -d maildb"]
       interval: 5s

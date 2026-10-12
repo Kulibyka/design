@@ -21,7 +21,7 @@
 Логин нормализуется перед INSERT и поиском, поэтому запрос использует `login = %s`,
 а не `lower(login) = %s`; подходит обычный индекс UNIQUE. Для масок API экранирует
 исходные `%`, `_` и обратный слеш, затем заменяет `*` на `%`, а `?` на `_`.
-Условие `lower(first_name) LIKE 'иван%'` соответствует выражению индекса.
+Условие `lower(first_name) LIKE 'ivan%'` соответствует выражению индекса.
 `text_pattern_ops` позволяет использовать известное начало строки при LIKE.
 Маска с начальным `*` и поиск всех пользователей могут потребовать полного просмотра.
 
@@ -41,7 +41,8 @@
 После добавлены три индекса из `schema.sql`. Перед обеими сериями выполнен ANALYZE;
 перед каждым EXPLAIN запрос выполнен один раз для прогрева. Использовался
 `EXPLAIN (ANALYZE, BUFFERS)`, настройки планировщика не изменялись.
-Ниже приведён фактический вывод одного сравнительного запуска.
+Ниже сохранён фактический вывод исходного запуска с именами на кириллице.
+Примеры SQL для повторения используют латиницу; время нового запуска может отличаться.
 
 | Запрос | До, мс | После, мс |
 | --- | ---: | ---: |
@@ -61,7 +62,7 @@
 ```sql
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT id, login, first_name, last_name, created_at FROM users
-WHERE lower(first_name) LIKE 'иван%' AND lower(last_name) LIKE 'петров%'
+WHERE lower(first_name) LIKE 'ivan%' AND lower(last_name) LIKE 'petrov%'
 ORDER BY login;
 ```
 
@@ -241,8 +242,8 @@ INSERT-запросы из `queries.sql` используют ограничен
 
 ```bash
 docker compose exec db createdb -U mail maildb_optimization
-docker compose exec -T db psql -U mail -d maildb_optimization -v ON_ERROR_STOP=1 < schema.sql
-docker compose exec -T db psql -U mail -d maildb_optimization -v ON_ERROR_STOP=1 < data.sql
+docker compose exec -T db psql -U mail -d maildb_optimization -v ON_ERROR_STOP=1 < postgresql/schema.sql
+docker compose exec -T db psql -U mail -d maildb_optimization -v ON_ERROR_STOP=1 < postgresql/data.sql
 docker compose exec db psql -U mail -d maildb_optimization
 ```
 
@@ -255,20 +256,20 @@ DROP INDEX idx_users_first_name, idx_users_last_name, idx_messages_folder_create
 
 INSERT INTO users (id, login, first_name, last_name, password_hash)
 SELECT md5('user-' || n)::UUID, 'bench_' || n,
-       CASE WHEN n % 1000 = 0 THEN 'Иван' || n ELSE 'Имя' || n END,
-       CASE WHEN n % 1000 = 0 THEN 'Петров' || n ELSE 'Фамилия' || n END,
+       CASE WHEN n % 1000 = 0 THEN 'Ivan' || n ELSE 'Name' || n END,
+       CASE WHEN n % 1000 = 0 THEN 'Petrov' || n ELSE 'Surname' || n END,
        (SELECT password_hash FROM users WHERE login = 'user01')
 FROM generate_series(11, 50000) AS n;
 
 INSERT INTO folders (id, user_id, name)
-SELECT md5('folder-' || n)::UUID, md5('user-' || n)::UUID, 'Входящие'
+SELECT md5('folder-' || n)::UUID, md5('user-' || n)::UUID, 'Inbox'
 FROM generate_series(11, 50000) AS n;
 
 INSERT INTO messages (code, folder_id, subject, body, recipient_address, created_at)
 SELECT md5('message-' || n)::UUID,
        CASE WHEN n % 1000 = 0 THEN '20000000-0000-4000-8000-000000000001'::UUID
             ELSE md5('folder-' || n)::UUID END,
-       'Тема ' || n, 'Текст письма ' || n, 'teacher@example.com',
+       'Subject ' || n, 'Message body ' || n, 'teacher@example.com',
        TIMESTAMPTZ '2026-10-12 12:00:00+00' + n * INTERVAL '1 second'
 FROM generate_series(11, 50000) AS n;
 

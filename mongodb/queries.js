@@ -14,7 +14,7 @@ check(db.messages.findOne({_id: demoMessageCode}) === null, "Demo message ID is 
 try {
     // 1. Создание пользователя. API заранее хеширует пароль и приводит логин к нижнему регистру.
     db.users.insertOne({
-        _id: demoUserId, login: "demo_user", first_name: "Иван", last_name: "Петров",
+        _id: demoUserId, login: "demo_user", first_name: "Ivan", last_name: "Petrov",
         password_hash: "$argon2id$v=19$m=65536,t=3,p=4$cjrweZivnffTJhze9PgvSg$luEiJ2OeKObGJmBAkKnjePH4CycsfgI4pcweBQTL6Ls",
         created_at: new Date()
     });
@@ -22,10 +22,10 @@ try {
     // 2. Поиск пользователя по логину, без выдачи хеша пароля.
     printjson(db.users.findOne({login: {$eq: "demo_user"}}, {password_hash: 0}));
 
-    // 3. Маски Ив* и Пет?ов. API экранирует исходный текст перед заменой * и ?.
+    // 3. Маски Iv* и Pet?ov. API экранирует исходный текст перед заменой * и ?.
     db.users.find({$and: [
-        {first_name: {$regex: "^Ив.*$", $options: "i"}},
-        {last_name: {$regex: "^Пет.ов$", $options: "i"}}
+        {first_name: {$regex: "^Iv.*$", $options: "i"}},
+        {last_name: {$regex: "^Pet.ov$", $options: "i"}}
     ]}, {password_hash: 0}).sort({login: 1}).forEach(document => printjson(document));
 
     // 4. Создание папки пользователя.
@@ -70,7 +70,7 @@ try {
     printjson(selected);
 
     // Update: обновление по одному документу каждой коллекции.
-    check(db.users.updateOne({_id: demoUserId}, {$set: {first_name: "Ivan"}}).modifiedCount === 1);
+    check(db.users.updateOne({_id: demoUserId}, {$set: {first_name: "Alexey"}}).modifiedCount === 1);
     check(db.folders.updateOne({_id: demoFolderId, user_id: demoUserId},
         {$set: {name: "Updated demo folder"}}).modifiedCount === 1);
     const updatedBody = "Updated project description.";

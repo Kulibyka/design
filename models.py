@@ -22,8 +22,8 @@ class UserCreate(RequestModel):
 
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "login": "ivan",
-        "first_name": "Иван",
-        "last_name": "Петров",
+        "first_name": "Ivan",
+        "last_name": "Petrov",
         "password": "example-password",
     }]})
 
@@ -44,7 +44,7 @@ class UserResponse(BaseModel):
 
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "id": "11111111-1111-4111-8111-111111111111",
-        "login": "ivan", "first_name": "Иван", "last_name": "Петров",
+        "login": "ivan", "first_name": "Ivan", "last_name": "Petrov",
         "created_at": "2026-10-12T12:00:00Z",
     }]})
 
@@ -71,7 +71,7 @@ class TokenResponse(BaseModel):
 class FolderCreate(RequestModel):
     name: NonEmptyText
 
-    model_config = ConfigDict(json_schema_extra={"examples": [{"name": "Учёба"}]})
+    model_config = ConfigDict(json_schema_extra={"examples": [{"name": "Study"}]})
 
 
 class FolderResponse(BaseModel):
@@ -83,7 +83,7 @@ class FolderResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "id": "22222222-2222-4222-8222-222222222222",
         "user_id": "11111111-1111-4111-8111-111111111111",
-        "name": "Учёба", "created_at": "2026-10-12T12:00:00Z",
+        "name": "Study", "created_at": "2026-10-12T12:00:00Z",
     }]})
 
 
@@ -93,8 +93,8 @@ class MessageCreate(RequestModel):
     recipient_address: EmailStr
 
     model_config = ConfigDict(json_schema_extra={"examples": [{
-        "subject": "Домашнее задание",
-        "body": "Отправляю описание архитектуры.",
+        "subject": "Homework",
+        "body": "Project description.",
         "recipient_address": "teacher@example.com",
     }]})
 
@@ -110,7 +110,7 @@ class MessageResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "code": "33333333-3333-4333-8333-333333333333",
         "folder_id": "22222222-2222-4222-8222-222222222222",
-        "subject": "Домашнее задание", "body": "Отправляю описание архитектуры.",
+        "subject": "Homework", "body": "Project description.",
         "recipient_address": "teacher@example.com", "created_at": "2026-10-12T12:00:00Z",
     }]})
 
