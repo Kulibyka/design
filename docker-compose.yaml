@@ -2,13 +2,31 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql://mail:mail_password@db:5432/maildb
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: maildb
     depends_on:
-      db:
+      mongo:
         condition: service_healthy
     ports:
       - "8000:8000"
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_DATABASE: maildb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./validation.js:/docker-entrypoint-initdb.d/01-validation.js:ro
+      - ./data.js:/docker-entrypoint-initdb.d/02-data.js:ro
+      - ./queries.js:/scripts/queries.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --host $$HOSTNAME --quiet --eval 'db.adminCommand({ping: 1})'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
   db:
+    profiles: ["postgres"]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: maildb
@@ -27,4 +45,5 @@ services:
       retries: 10
 
 volumes:
+  mongodb_data:
   postgres_data:

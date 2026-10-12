@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Электронная почта — вариант 9
-  description: Домашнее задание 03. Пользователи, папки и письма хранятся в PostgreSQL.
+  description: Домашнее задание 04. Пользователи, папки и письма хранятся в MongoDB.
   version: 1.0.0
 paths:
   /api/v1/users:

@@ -5,43 +5,40 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 import pytest
-import psycopg
-from psycopg.conninfo import conninfo_to_dict
+from pymongo.errors import DuplicateKeyError, WriteError
 import yaml
 
-from database import get_connection
+from database import get_database, mongo_client
 from main import app, find_user, password_hasher, sessions
 
 
 @pytest.fixture(scope="session")
-def test_database_url():
-    url = os.environ.get(
-        "TEST_DATABASE_URL", "postgresql://mail:mail_password@localhost:5432/maildb_test",
-    )
-    # Тесты очищают таблицы, поэтому рабочую БД использовать нельзя.
-    assert conninfo_to_dict(url)["dbname"].endswith("_test"), "Нужна отдельная БД с суффиксом _test"
-    with psycopg.connect(url) as connection:
-        connection.execute(Path(__file__).parents[1].joinpath("schema.sql").read_text(encoding="utf-8"))
-    return url
+def test_database_name():
+    name = os.environ.get("TEST_MONGO_DB", "maildb_test")
+    assert name.endswith("_test"), "Нужна отдельная БД с суффиксом _test"
+    database = mongo_client[name]
+    for collection in ("users", "folders", "messages"):
+        assert "$jsonSchema" in database[collection].options().get("validator", {}), \
+            "Перед тестами выполните validation.js в тестовой базе, как указано в README"
+    return name
 
 
 @pytest.fixture
-def client(monkeypatch, test_database_url):
-    monkeypatch.setenv("DATABASE_URL", test_database_url)
-    with get_connection() as connection:
-        connection.execute("TRUNCATE messages, folders, users")
+def client(monkeypatch, test_database_name):
+    monkeypatch.setenv("MONGO_DB", test_database_name)
+    for collection in ("messages", "folders", "users"):
+        get_database()[collection].delete_many({})
     sessions.clear()
     with TestClient(app) as test_client:
         yield test_client
-    with get_connection() as connection:
-        connection.execute("TRUNCATE messages, folders, users")
+    for collection in ("messages", "folders", "users"):
+        get_database()[collection].delete_many({})
     sessions.clear()
 
 
 def count_records(table):
     assert table in {"users", "folders", "messages"}
-    with get_connection() as connection:
-        return connection.execute(f"SELECT count(*) AS count FROM {table}").fetchone()["count"]
+    return get_database()[table].count_documents({})
 
 
 def register(client, login="ivan", first_name="Иван", last_name="Петров"):
@@ -292,22 +289,39 @@ def test_data_remains_after_session_is_lost(client):
     assert result.json() == letter
 
 
-def test_database_constraints(client):
+def test_mongo_schema_validation(client):
     user = register(client).json()
     folder = create_folder(client, authorization(client))
-    cases = [
-        ("INSERT INTO folders (user_id, name) VALUES (%s, %s)",
-         (uuid4(), "Несуществующий владелец"), psycopg.errors.ForeignKeyViolation),
-        ("INSERT INTO folders (user_id, name) VALUES (%s, %s)",
-         (user["id"], folder["name"]), psycopg.errors.UniqueViolation),
-        ("INSERT INTO messages (folder_id, subject, body, recipient_address) VALUES (%s, %s, %s, %s)",
-         (folder["id"], None, "Текст", "teacher@example.com"), psycopg.errors.NotNullViolation),
-        ("INSERT INTO messages (folder_id, subject, body, recipient_address) VALUES (%s, %s, %s, %s)",
-         (folder["id"], " ", "Текст", "teacher@example.com"), psycopg.errors.CheckViolation),
+    database = get_database()
+    template = {
+        "folder_id": folder["id"], "content": {"subject": "Test", "body": "Body"},
+        "recipients": ["teacher@example.com"], "size_bytes": 4,
+        "created_at": datetime.now(timezone.utc),
+    }
+    invalid_messages = [
+        {**template, "content": {"subject": "Test"}},
+        {**template, "content": {"subject": " ", "body": "Body"}},
+        {**template, "recipients": ["invalid-address"]},
+        {**template, "size_bytes": 0},
+        {**template, "created_at": "2026-10-12"},
     ]
-    for query, parameters, error in cases:
-        with pytest.raises(error):
-            with get_connection() as connection:
-                connection.execute(query, parameters)
+    for document in invalid_messages:
+        document["_id"] = str(uuid4())
+        with pytest.raises(WriteError) as error:
+            database.messages.insert_one(document)
+        assert error.value.code == 121  # Document failed validation
+    with pytest.raises(WriteError) as error:
+        database.users.insert_one({"_id": str(uuid4()), "login": "incomplete-user"})
+    assert error.value.code == 121
+    with pytest.raises(WriteError) as error:
+        database.folders.insert_one({
+            "_id": str(uuid4()), "user_id": user["id"], "name": " ", "created_at": datetime.now(timezone.utc),
+        })
+    assert error.value.code == 121
+    with pytest.raises(DuplicateKeyError):
+        database.folders.insert_one({
+            "_id": str(uuid4()), "user_id": user["id"], "name": folder["name"],
+            "created_at": datetime.now(timezone.utc),
+        })
     assert count_records("folders") == 1
     assert count_records("messages") == 0

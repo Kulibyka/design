@@ -1,9 +1,10 @@
 """Учебный REST API: пользователи, почтовые папки и письма."""
 
 from datetime import datetime, timedelta, timezone
+import re
 import secrets
 from urllib.parse import urlencode
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -12,9 +13,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
-from psycopg.errors import UniqueViolation
+from pymongo.errors import DuplicateKeyError
 
-from database import get_connection
+from database import get_database
 
 from models import (
     ErrorResponse, FolderCreate, FolderResponse, LoginRequest, MessageCreate,
@@ -24,7 +25,7 @@ from models import (
 
 app = FastAPI(
     title="Электронная почта — вариант 9",
-    description="Домашнее задание 03. Пользователи, папки и письма хранятся в PostgreSQL.",
+    description="Домашнее задание 04. Пользователи, папки и письма хранятся в MongoDB.",
     version="1.0.0",
 )
 
@@ -76,26 +77,40 @@ async def authentication(request: Request, call_next):
 
 def public_user(user: dict) -> UserResponse:
     # Пароль и его хеш никогда не попадают в ответ.
-    return UserResponse(**{field: user[field] for field in UserResponse.model_fields})
+    return UserResponse(id=user["_id"], **{
+        field: user[field] for field in UserResponse.model_fields if field != "id"
+    })
+
+
+def folder_response(folder: dict) -> FolderResponse:
+    return FolderResponse(id=folder["_id"], **folder)
+
+
+def message_response(message: dict) -> MessageResponse:
+    return MessageResponse(
+        code=message["_id"], folder_id=message["folder_id"],
+        subject=message["content"]["subject"], body=message["content"]["body"],
+        recipient_address=message["recipients"][0], created_at=message["created_at"],
+    )
+
+
+def mongo_now() -> datetime:
+    # BSON Date хранит миллисекунды: округляем до сохранения и ответа API.
+    now = datetime.now(timezone.utc)
+    return now.replace(microsecond=(now.microsecond // 1000) * 1000)
 
 
 def find_user(login: str) -> dict | None:
-    with get_connection() as connection:
-        return connection.execute(
-            "SELECT * FROM users WHERE login = %s", (login.strip().lower(),),
-        ).fetchone()
+    return get_database().users.find_one({"login": login.strip().lower()})
 
 
-def mask_to_like(mask: str) -> str:
-    # В LIKE символы % и _ специальные, поэтому исходные символы экранируются.
-    return (mask.lower().replace("\\", "\\\\").replace("%", "\\%")
-            .replace("_", "\\_").replace("*", "%").replace("?", "_"))
+def mask_to_regex(mask: str) -> str:
+    # Только * и ? имеют специальное значение; остальной текст экранируется.
+    return "^" + re.escape(mask).replace(r"\*", ".*").replace(r"\?", ".") + "$"
 
 
-def get_owned_folder(connection, folder_id: UUID, user_id: UUID) -> dict:
-    folder = connection.execute(
-        "SELECT * FROM folders WHERE id = %s AND user_id = %s", (folder_id, user_id),
-    ).fetchone()
+def get_owned_folder(database, folder_id: UUID, user_id: str) -> dict:
+    folder = database.folders.find_one({"_id": str(folder_id), "user_id": user_id})
     if folder is None:
         raise HTTPException(status_code=404, detail="Папка не найдена")
     return folder
@@ -107,14 +122,14 @@ def get_owned_folder(connection, folder_id: UUID, user_id: UUID) -> dict:
     responses={**INVALID_DATA, **CONFLICT},
 )
 def create_user(data: UserCreate, response: Response):
+    user = {
+        "_id": str(uuid4()), "login": data.login.lower(),
+        "first_name": data.first_name, "last_name": data.last_name,
+        "password_hash": password_hasher.hash(data.password), "created_at": mongo_now(),
+    }
     try:
-        with get_connection() as connection:
-            user = connection.execute(
-                """INSERT INTO users (login, first_name, last_name, password_hash)
-                   VALUES (%s, %s, %s, %s) RETURNING *""",
-                (data.login.lower(), data.first_name, data.last_name, password_hasher.hash(data.password)),
-            ).fetchone()
-    except UniqueViolation:
+        get_database().users.insert_one(user)
+    except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Логин уже занят")
     response.headers["Location"] = "/api/v1/users/by-login?" + urlencode({"login": user["login"]})
     return public_user(user)
@@ -140,7 +155,7 @@ def login(data: LoginRequest):
         )
     token = secrets.token_urlsafe(32)
     sessions[token] = {
-        "user_id": user["id"],
+        "user_id": user["_id"],
         "expires_at": datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS),
     }
     return TokenResponse(access_token=token, expires_in=SESSION_SECONDS)
@@ -179,18 +194,12 @@ def search_users(
         raise HTTPException(status_code=400, detail="Укажите маску имени или фамилии")
     if any(mask is not None and not mask.strip() for mask in (first_name_mask, last_name_mask)):
         raise HTTPException(status_code=400, detail="Маска не должна быть пустой")
-    conditions = []
-    parameters = []
+    query = {}
     if first_name_mask is not None:
-        conditions.append("lower(first_name) LIKE %s")
-        parameters.append(mask_to_like(first_name_mask))
+        query["first_name"] = {"$regex": mask_to_regex(first_name_mask), "$options": "is"}
     if last_name_mask is not None:
-        conditions.append("lower(last_name) LIKE %s")
-        parameters.append(mask_to_like(last_name_mask))
-    query = ("SELECT id, login, first_name, last_name, created_at FROM users WHERE "
-             + " AND ".join(conditions) + " ORDER BY login")
-    with get_connection() as connection:
-        found = connection.execute(query, parameters).fetchall()
+        query["last_name"] = {"$regex": mask_to_regex(last_name_mask), "$options": "is"}
+    found = get_database().users.find(query, {"password_hash": 0}).sort("login", 1)
     return [public_user(user) for user in found]
 
 
@@ -200,14 +209,16 @@ def search_users(
     responses={**INVALID_DATA, **CONFLICT},
 )
 def create_folder(data: FolderCreate, request: Request):
+    database = get_database()
+    user_id = request.state.user_id
+    if database.users.find_one({"_id": user_id}, {"_id": 1}) is None:
+        raise HTTPException(status_code=401, detail="Пользователь не найден", headers={"WWW-Authenticate": "Bearer"})
+    folder = {"_id": str(uuid4()), "user_id": user_id, "name": data.name, "created_at": mongo_now()}
     try:
-        with get_connection() as connection:
-            return connection.execute(
-                "INSERT INTO folders (user_id, name) VALUES (%s, %s) RETURNING *",
-                (request.state.user_id, data.name),
-            ).fetchone()
-    except UniqueViolation:
+        database.folders.insert_one(folder)
+    except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Папка с таким именем уже существует")
+    return folder_response(folder)
 
 
 @api.get(
@@ -215,11 +226,8 @@ def create_folder(data: FolderCreate, request: Request):
     tags=["Папки"], summary="Получить все папки текущего пользователя",
 )
 def get_folders(request: Request):
-    with get_connection() as connection:
-        return connection.execute(
-            "SELECT * FROM folders WHERE user_id = %s ORDER BY name, id",
-            (request.state.user_id,),
-        ).fetchall()
+    found = get_database().folders.find({"user_id": request.state.user_id}).sort([("name", 1), ("_id", 1)])
+    return [folder_response(folder) for folder in found]
 
 
 @api.post(
@@ -228,15 +236,17 @@ def get_folders(request: Request):
     responses={**INVALID_DATA, **NOT_FOUND},
 )
 def create_message(folder_id: UUID, data: MessageCreate, request: Request, response: Response):
-    with get_connection() as connection:
-        get_owned_folder(connection, folder_id, request.state.user_id)
-        message = connection.execute(
-            """INSERT INTO messages (folder_id, subject, body, recipient_address)
-               VALUES (%s, %s, %s, %s) RETURNING *""",
-            (folder_id, data.subject, data.body, str(data.recipient_address)),
-        ).fetchone()
-    response.headers["Location"] = f"/api/v1/messages/{message['code']}"
-    return message
+    database = get_database()
+    get_owned_folder(database, folder_id, request.state.user_id)
+    message = {
+        "_id": str(uuid4()), "folder_id": str(folder_id),
+        "content": {"subject": data.subject, "body": data.body},
+        "recipients": [str(data.recipient_address)],
+        "size_bytes": len(data.body.encode("utf-8")), "created_at": mongo_now(),
+    }
+    database.messages.insert_one(message)
+    response.headers["Location"] = f"/api/v1/messages/{message['_id']}"
+    return message_response(message)
 
 
 @api.get(
@@ -245,15 +255,10 @@ def create_message(folder_id: UUID, data: MessageCreate, request: Request, respo
     responses={**INVALID_DATA, **NOT_FOUND},
 )
 def get_messages(folder_id: UUID, request: Request):
-    with get_connection() as connection:
-        get_owned_folder(connection, folder_id, request.state.user_id)
-        return connection.execute(
-            """SELECT m.* FROM messages AS m
-               JOIN folders AS f ON f.id = m.folder_id
-               WHERE m.folder_id = %s AND f.user_id = %s
-               ORDER BY m.created_at, m.code""",
-            (folder_id, request.state.user_id),
-        ).fetchall()
+    database = get_database()
+    get_owned_folder(database, folder_id, request.state.user_id)
+    found = database.messages.find({"folder_id": str(folder_id)}).sort([("created_at", 1), ("_id", 1)])
+    return [message_response(message) for message in found]
 
 
 @api.get(
@@ -262,16 +267,13 @@ def get_messages(folder_id: UUID, request: Request):
     responses={**INVALID_DATA, **NOT_FOUND},
 )
 def get_message(code: UUID, request: Request):
-    with get_connection() as connection:
-        message = connection.execute(
-            """SELECT m.* FROM messages AS m
-               JOIN folders AS f ON f.id = m.folder_id
-               WHERE m.code = %s AND f.user_id = %s""",
-            (code, request.state.user_id),
-        ).fetchone()
+    database = get_database()
+    message = database.messages.find_one({"_id": str(code)})
     if message is None:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
-    return message
+    if database.folders.find_one({"_id": message["folder_id"], "user_id": request.state.user_id}) is None:
+        raise HTTPException(status_code=404, detail="Письмо не найдено")
+    return message_response(message)
 
 
 app.include_router(api)

@@ -1,128 +1,128 @@
-# Домашнее задание 03. PostgreSQL для сервиса электронной почты
+# Домашнее задание 04. MongoDB для сервиса электронной почты
 
 Вариант 9. Приложение содержит пользователей, почтовые папки и сообщения.
 Реализованы все восемь операций варианта и вход пользователя.
 
-Используются Python 3.12, FastAPI, Pydantic, PostgreSQL 16 и драйвер psycopg.
-Пользователи, папки и письма из домашней работы 02 теперь хранятся в PostgreSQL.
-Это один учебный сервис с обычными SQL-запросами. Пути API и форматы ответов сохранены.
+Используются Python 3.12, FastAPI, Pydantic, MongoDB 7 и простой драйвер PyMongo.
+Все три сущности теперь хранятся в MongoDB. Пути API и форматы запросов и ответов
+из домашней работы 02 сохранены.
 
-## Запуск API и PostgreSQL через Docker
+## Запуск API и MongoDB через Docker
 
-Из корня проекта, где находится `docker-compose.yaml`:
+Из папки проекта, где находится `docker-compose.yaml`:
 
 ```bash
 docker compose up --build
 ```
 
-Запускаются контейнеры `api` и `db`. API слушает порт 8000, PostgreSQL — 5432.
-База называется `maildb`, пользователь — `mail`, пароль учебной базы — `mail_password`.
-API ждёт готовности PostgreSQL перед запуском.
+Запускаются сервисы `api` и `mongo`. API слушает порт 8000, MongoDB — 27017.
+API ждёт готовности MongoDB. При первом запуске в пустом MongoDB volume
+автоматически выполняются `validation.js` и `data.js`: создаются база `maildb`,
+коллекции, валидаторы, индексы и по 10 документов в каждой коллекции.
 
-При первом запуске в пустой базе автоматически выполняются `schema.sql` и `data.sql`.
-Создаются таблицы, индексы и по 10 записей в каждой таблице. Можно войти под
-логином `user01` с паролем `example-password`; у него уже есть папка «Входящие» и письмо.
+Можно войти под логином `user01` с паролем `example-password`.
+У пользователя уже есть папка «Входящие» и одно письмо.
 
-Данные PostgreSQL сохраняются в Docker volume `postgres_data`. Обычная остановка
-сохраняет этот volume:
+Swagger UI доступен по пути `/docs`, спецификация — `/openapi.json`.
+В Swagger можно зарегистрироваться, выполнить вход и вставить `access_token`
+в окно **Authorize**.
+
+Остановка сохраняет данные в volume `mongodb_data`:
 
 ```bash
 docker compose down
 ```
 
-Для полного сброса учебной базы используется `docker compose down -v`:
-эта команда удаляет данные. При следующем запуске SQL-файлы выполнятся заново.
-
-При непустом volume SQL-файлы автоматически повторно не выполняются.
-Применить их вручную к базе текущего проекта можно так:
+Инициализация выполняется только при первом запуске пустого volume.
+Применить скрипты вручную или повторно можно так:
 
 ```bash
-docker compose exec -T db psql -U mail -d maildb -v ON_ERROR_STOP=1 < schema.sql
-docker compose exec -T db psql -U mail -d maildb -v ON_ERROR_STOP=1 < data.sql
+docker compose exec -T mongo mongosh --quiet maildb --file /docker-entrypoint-initdb.d/01-validation.js
+docker compose exec -T mongo mongosh --quiet maildb --file /docker-entrypoint-initdb.d/02-data.js
 ```
 
-Эти команды работают в Bash и cmd.exe. Повторный запуск `data.sql` не добавляет дубликаты.
+Повторная загрузка данных использует `$setOnInsert`, поэтому документы не дублируются
+и существующие записи не заменяются.
 
-Swagger UI доступен по пути `/docs`,
-JSON-спецификация — `/openapi.json`. В Swagger можно зарегистрироваться,
-выполнить вход и вставить значение `access_token` в окно **Authorize**.
+## Запуск API из Python
 
-## Локальный запуск API
-
-PostgreSQL можно оставить в Docker, а API запустить из Python:
+MongoDB остаётся в Docker:
 
 ```bash
-docker compose up -d db
+docker compose up -d mongo
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export DATABASE_URL="postgresql://mail:mail_password@localhost:5432/maildb"
+export MONGO_URI="mongodb://localhost:27017"
+export MONGO_DB="maildb"
 uvicorn main:app --reload
 ```
 
-В cmd.exe активация и переменная задаются так:
+В cmd.exe активация и переменные задаются так:
 
 ```cmd
 .venv\Scripts\activate
-set "DATABASE_URL=postgresql://mail:mail_password@localhost:5432/maildb"
+set "MONGO_URI=mongodb://localhost:27017"
+set "MONGO_DB=maildb"
 ```
 
-По умолчанию Python использует этот же адрес БД. При запуске API в Docker
-Compose вместо `localhost` указывается имя контейнера `db`.
+Это же подключение используется Python по умолчанию. В контейнере API имя
+сервера в `MONGO_URI` — `mongo`. Для другого сервера задайте переменную перед
+запуском Python и примените `validation.js` к выбранной базе.
 
-## Схема базы данных
+## Коллекции MongoDB
 
-Связи: один пользователь имеет несколько папок, одна папка — несколько писем.
+| Коллекция | Состав документа |
+| --- | --- |
+| `users` | `_id`, `login`, `first_name`, `last_name`, `password_hash`, `created_at` |
+| `folders` | `_id`, `user_id`, `name`, `created_at` |
+| `messages` | `_id`, `folder_id`, `content: {subject, body}`, `recipients`, `size_bytes`, `created_at` |
 
-### users
+UUID хранятся как String, даты — Date, содержимое письма — вложенный Object,
+адрес получателя — Array из одной строки, размер текста в UTF-8 — Number.
+`user_id` ссылается на пользователя, `folder_id` — на папку.
+Обоснование embedded/references и примеры документов находятся в `schema_design.md`.
 
-| Колонка | Тип | Ограничения и значение по умолчанию |
-| --- | --- | --- |
-| `id` | `UUID` | PK, `gen_random_uuid()` |
-| `login` | `TEXT` | NOT NULL, UNIQUE, CHECK: непустой, в нижнем регистре, без пробелов по краям |
-| `first_name` | `TEXT` | NOT NULL, CHECK: непустой |
-| `last_name` | `TEXT` | NOT NULL, CHECK: непустой |
-| `password_hash` | `TEXT` | NOT NULL, CHECK: непустой |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` |
+В `validation.js` заданы `$jsonSchema`, обязательные поля, BSON-типы,
+ограничения строк, массива и числа. Скрипт создаёт уникальные индексы логина
+и имени папки у владельца, а также индекс чтения писем папки.
 
-### folders
+## Выполнение MongoDB-запросов
 
-| Колонка | Тип | Ограничения и значение по умолчанию |
-| --- | --- | --- |
-| `id` | `UUID` | PK, `gen_random_uuid()` |
-| `user_id` | `UUID` | NOT NULL, FK → `users.id` |
-| `name` | `TEXT` | NOT NULL, CHECK: непустой, UNIQUE вместе с `user_id` |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` |
-
-### messages
-
-| Колонка | Тип | Ограничения и значение по умолчанию |
-| --- | --- | --- |
-| `code` | `UUID` | PK, `gen_random_uuid()` |
-| `folder_id` | `UUID` | NOT NULL, FK → `folders.id` |
-| `subject` | `TEXT` | NOT NULL, CHECK: непустой |
-| `body` | `TEXT` | NOT NULL, CHECK: непустой |
-| `recipient_address` | `TEXT` | NOT NULL, CHECK: адрес с `@`, доменом и без пробелов |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, `now()` |
-
-Проверки имён, логина, названия папки, темы и текста учитывают строки из одних пробелов. Более подробную
-проверку адреса получателя выполняет Pydantic в API. Внешние ключи не позволяют
-создать папку без пользователя или письмо без папки.
-
-PK и UNIQUE автоматически создают индексы. Дополнительно созданы два индекса
-для поиска по началу имени и фамилии и индекс `(folder_id, created_at, code)`
-для чтения писем папки. Обоснование каждого индекса и реальные планы запросов
-до и после оптимизации находятся в `optimization.md`.
-
-В `queries.sql` есть все восемь операций варианта с конкретными примерами.
-Проверить их можно командой:
+Открыть интерактивный mongosh:
 
 ```bash
-docker compose exec -T db psql -U mail -d maildb -v ON_ERROR_STOP=1 < queries.sql
+docker compose exec mongo mongosh maildb
 ```
 
-Демонстрационные записи откатываются через `ROLLBACK`. В API SQL-запросы
-параметризованы; значения пользователя не подставляются в текст SQL.
+Выполнить `queries.js`:
+
+```bash
+docker compose exec -T mongo mongosh --quiet maildb --file /scripts/queries.js
+```
+
+Скрипт выполняет все восемь операций варианта, примеры Update и Delete для
+трёх коллекций и фильтрацию с `$eq`, `$ne`, `$gt`, `$lt`, `$in`, `$and`, `$or`.
+Он обновляет и удаляет только свои демонстрационные документы. Завершение
+`All variant operations, filters, updates and deletes passed` означает, что
+проверки скрипта прошли.
+
+Обновление и удаление представлены запросами MongoDB из задания 04.
+HTTP API сохраняет набор операций выбранного варианта.
+Необязательные агрегации не используются.
+
+## Материалы предыдущего задания
+
+`schema.sql`, `data.sql`, `queries.sql`, `optimization.md` сохранены для работы 03.
+PostgreSQL остаётся отдельным сервисом в профиле `postgres`:
+
+```bash
+docker compose --profile postgres up -d db
+```
+
+Его база и volume сохраняются отдельно. Перенос данных между PostgreSQL и MongoDB
+не выполняется: текущий API использует MongoDB. Версия API с PostgreSQL доступна
+в [коммите домашней работы 03](https://github.com/Kulibyka/design/tree/43ef16a8cf532726017502b0661290f21dc2a86d).
 
 ## Данные и правила
 
@@ -328,11 +328,12 @@ curl -i http://localhost:8000/api/v1/folders
 
 ## Тесты и спецификация
 
-Тесты работают с отдельной PostgreSQL-базой `maildb_test`. Создать её нужно один раз:
+Тесты используют отдельную MongoDB-базу `maildb_test`.
+Перед тестами запустите MongoDB и примените к этой базе валидаторы:
 
 ```bash
-docker compose up -d db
-docker compose exec db createdb -U mail maildb_test
+docker compose up -d mongo
+docker compose exec -T mongo mongosh --quiet maildb_test --file /docker-entrypoint-initdb.d/01-validation.js
 ```
 
 После активации виртуального окружения:
@@ -342,14 +343,16 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Схема тестовой БД создаётся автоматически. Перед каждым тестом её таблицы очищаются.
-Если нужен другой сервер, укажите `TEST_DATABASE_URL`; имя базы должно оканчиваться
-на `_test`. Рабочая `maildb` тестами не очищается.
+Перед каждым тестом и после него документы тестовой базы очищаются.
+Переменная `TEST_MONGO_DB` позволяет выбрать другое имя, оканчивающееся на `_test`.
+Для другого сервера задайте `MONGO_URI` перед запуском Python. Валидаторы должны
+быть применены к тестовой базе этого сервера. Рабочая `maildb` тестами не очищается.
 
-Тесты проверяют все операции, поиск по маскам, уникальность логина и папки,
+Тесты проверяют все операции API, поиск по маскам, уникальность логина и папки,
 невалидные данные, отсутствующие ресурсы, неверные и истёкшие токены,
-недоступность чужих папок и писем, ограничения PostgreSQL, сохранение данных
-после потери сессии, Swagger и соответствие файла OpenAPI серверу.
+недоступность чужих папок и писем, валидацию MongoDB и сохранение данных после
+потери сессии. При попытке вставить невалидные документы проверяется ошибка `121`.
+Также проверяются Swagger и соответствие файла OpenAPI серверу.
 
 `openapi.yaml` содержит параметры, модели запросов/ответов, примеры и схему
 Bearer-аутентификации. Пересоздать спецификацию после изменения API:
@@ -360,28 +363,31 @@ python generate_openapi.py
 
 ## Ограничения учебного решения
 
-Пользователи, папки и письма сохраняются в PostgreSQL и переживают перезапуск API.
+Пользователи, папки и письма сохраняются в MongoDB и переживают перезапуск API.
 Сессионные токены остались в памяти: после перезапуска API нужен повторный вход.
 Нужен один процесс Uvicorn, поскольку несколько workers не разделяют сессии.
 Письмо сохраняется в папке; доставка через SMTP и интеграция с Outlook в задание не входят.
-Опциональное партиционирование не используется: для этой учебной базы оно не требуется.
 
 ## Файлы проекта
 
 ```text
-main.py                  # endpoints, middleware и SQL-запросы
-database.py              # подключение psycopg
-models.py                # DTO запросов и ответов
-schema.sql               # таблицы, ограничения и индексы
-data.sql                 # по 10 тестовых записей на таблицу
-queries.sql              # все операции варианта
-optimization.md          # объяснение индексов и планы EXPLAIN
-requirements.txt         # зависимости сервиса
-requirements-dev.txt     # зависимости тестов и генератора спецификации
-generate_openapi.py      # сохранение спецификации
-openapi.yaml             # OpenAPI
-tests/test_api.py        # тесты
+main.py                  # endpoints, middleware и запросы PyMongo
+database.py              # подключение MongoClient
+models.py                # прежние DTO запросов и ответов
+schema_design.md         # документная модель и обоснование связей
+validation.js            # коллекции, JSON Schema и индексы
+data.js                  # по 10 документов в коллекции
+queries.js               # операции варианта, Update/Delete и операторы
+requirements.txt
+requirements-dev.txt
+generate_openapi.py
+openapi.yaml
+tests/test_api.py
 Dockerfile
 docker-compose.yaml
 README.md
+schema.sql               # материалы домашней работы 03
+data.sql
+queries.sql
+optimization.md
 ```
