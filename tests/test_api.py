@@ -7,11 +7,13 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 import pytest
 from pymongo.errors import DuplicateKeyError, WriteError
+from pika.exceptions import AMQPConnectionError
 import yaml
 
 from database import get_database, mongo_client
 from main import app, find_user, password_hasher, sessions
 from performance import folder_cache, login_limiter, message_cache
+from events.consumer import apply_event
 import performance
 
 
@@ -29,7 +31,8 @@ def test_database_name():
 @pytest.fixture
 def client(monkeypatch, test_database_name):
     monkeypatch.setenv("MONGO_DB", test_database_name)
-    for collection in ("messages", "folders", "users"):
+    monkeypatch.setattr("main.publish_event", lambda event_type, payload: None)
+    for collection in ("mail_read_model", "messages", "folders", "users"):
         get_database()[collection].delete_many({})
     sessions.clear()
     folder_cache.clear()
@@ -37,7 +40,7 @@ def client(monkeypatch, test_database_name):
     login_limiter.clear()
     with TestClient(app) as test_client:
         yield test_client
-    for collection in ("messages", "folders", "users"):
+    for collection in ("mail_read_model", "messages", "folders", "users"):
         get_database()[collection].delete_many({})
     sessions.clear()
     folder_cache.clear()
@@ -477,3 +480,70 @@ def test_rate_limit_does_not_exceed_limit_with_parallel_requests(monkeypatch):
         results = list(executor.map(lambda _: limiter.check("203.0.113.1"), range(40)))
     assert sum(allowed for allowed, _ in results) == 10
     assert all(headers["X-RateLimit-Remaining"] == "0" for allowed, headers in results if not allowed)
+
+
+def test_creation_publishes_events_without_secrets(client, monkeypatch):
+    published = []
+    monkeypatch.setattr("main.publish_event", lambda name, payload: published.append((name, payload)))
+    user = register(client).json()
+    headers = authorization(client)
+    folder = create_folder(client, headers)
+    letter = create_message(client, headers, folder["id"])
+    assert published == [("UserCreated", user), ("FolderCreated", folder), ("MessageCreated", letter)]
+    assert all("password" not in payload and "password_hash" not in payload for _, payload in published)
+    assert register(client).status_code == 409
+    assert client.post("/api/v1/folders", headers=headers, json={"name": folder["name"]}).status_code == 409
+    assert len(published) == 3
+
+
+def test_publication_failure_reports_saved_data_and_invalidates_cache(client, monkeypatch):
+    def unavailable(event_type, payload):
+        raise AMQPConnectionError()
+
+    monkeypatch.setattr("main.publish_event", unavailable)
+    result = register(client)
+    assert result.status_code == 503
+    assert count_records("users") == 1
+    headers = authorization(client)
+    assert client.get("/api/v1/folders", headers=headers).json() == []
+    result = client.post("/api/v1/folders", headers=headers, json={"name": "Study"})
+    assert result.status_code == 503
+    folders = client.get("/api/v1/folders", headers=headers)
+    assert folders.headers["x-cache"] == "MISS"
+    assert len(folders.json()) == 1
+    folder = folders.json()[0]
+    path = f"/api/v1/folders/{folder['id']}/messages"
+    assert client.get(path, headers=headers).json() == []
+    result = client.post(path, headers=headers, json={
+        "subject": "Homework", "body": "Project description.", "recipient_address": "teacher@example.com",
+    })
+    assert result.status_code == 503
+    letters = client.get(path, headers=headers)
+    assert letters.headers["x-cache"] == "MISS"
+    assert len(letters.json()) == 1
+
+
+def test_message_query_uses_read_model_and_keeps_ownership_check(client, monkeypatch):
+    register(client)
+    headers = authorization(client)
+    folder = create_folder(client, headers)
+    letter = create_message(client, headers, folder["id"])
+    event = {"event_id": str(uuid4()), "event_type": "MessageCreated", "version": 1,
+             "occurred_at": datetime.now(timezone.utc).isoformat(), "payload": letter}
+    assert apply_event(event, get_database())
+    assert not apply_event(event, get_database())
+    assert get_database().mail_read_model.count_documents({}) == 1
+    collection_type = type(get_database().messages)
+    original_find = collection_type.find
+
+    def projection_only(collection, *args, **kwargs):
+        assert collection.name != "messages", "Projected message should not query the write collection"
+        return original_find(collection, *args, **kwargs)
+
+    monkeypatch.setattr(collection_type, "find", projection_only)
+    result = client.get(f"/api/v1/messages/{letter['code']}", headers=headers)
+    assert result.status_code == 200
+    assert result.json() == letter
+    register(client, "anna", "Anna", "Petrova")
+    foreign = client.get(f"/api/v1/messages/{letter['code']}", headers=authorization(client, "anna"))
+    assert foreign.status_code == 404

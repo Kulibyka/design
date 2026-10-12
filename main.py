@@ -14,8 +14,10 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from pymongo.errors import DuplicateKeyError
+from pika.exceptions import AMQPError
 
 from database import get_database
+from events.producer import publish_event
 from performance import folder_cache, login_limiter, message_cache
 
 from models import (
@@ -26,7 +28,7 @@ from models import (
 
 app = FastAPI(
     title="Электронная почта — вариант 9",
-    description="Домашнее задание 05. MongoDB, кеширование в памяти и ограничение частоты входа.",
+    description="Домашнее задание 06. MongoDB, RabbitMQ, события создания и простая модель CQRS.",
     version="1.0.0",
 )
 
@@ -40,6 +42,7 @@ INVALID_DATA = {400: {"model": ErrorResponse, "description": "Некоррект
 NOT_FOUND = {404: {"model": ErrorResponse, "description": "Ресурс не найден или недоступен"}}
 CONFLICT = {409: {"model": ErrorResponse, "description": "Ресурс уже существует"}}
 UNAUTHORIZED = {401: {"model": ErrorResponse, "description": "Требуется вход в систему"}}
+PUBLICATION_ERROR = {503: {"model": ErrorResponse, "description": "Данные сохранены, но публикация события не подтверждена"}}
 RATE_HEADERS = {
     "X-RateLimit-Limit": {"description": "Лимит попыток входа с одного IP за минуту", "schema": {"type": "integer"}},
     "X-RateLimit-Remaining": {"description": "Оставшиеся попытки в текущей минуте", "schema": {"type": "integer"}},
@@ -146,10 +149,17 @@ def get_owned_folder(database, folder_id: UUID, user_id: str) -> dict:
     return folder
 
 
+def publish_created(event_type: str, payload: dict):
+    try:
+        publish_event(event_type, payload)
+    except (AMQPError, OSError):
+        raise HTTPException(status_code=503, detail="Data saved, but event publication was not confirmed")
+
+
 @app.post(
     "/api/v1/users", response_model=UserResponse, status_code=201,
     tags=["Пользователи"], summary="Создать пользователя (регистрация)",
-    responses={**INVALID_DATA, **CONFLICT},
+    responses={**INVALID_DATA, **CONFLICT, **PUBLICATION_ERROR},
 )
 def create_user(data: UserCreate, response: Response):
     user = {
@@ -161,8 +171,10 @@ def create_user(data: UserCreate, response: Response):
         get_database().users.insert_one(user)
     except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Логин уже занят")
+    result = public_user(user)
+    publish_created("UserCreated", result.model_dump(mode="json"))
     response.headers["Location"] = "/api/v1/users/by-login?" + urlencode({"login": user["login"]})
-    return public_user(user)
+    return result
 
 
 @app.post(
@@ -236,7 +248,7 @@ def search_users(
 @api.post(
     "/folders", response_model=FolderResponse, status_code=201,
     tags=["Папки"], summary="Создать почтовую папку",
-    responses={**INVALID_DATA, **CONFLICT},
+    responses={**INVALID_DATA, **CONFLICT, **PUBLICATION_ERROR},
 )
 def create_folder(data: FolderCreate, request: Request):
     database = get_database()
@@ -249,7 +261,9 @@ def create_folder(data: FolderCreate, request: Request):
     except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Папка с таким именем уже существует")
     folder_cache.invalidate(user_id)
-    return folder_response(folder)
+    result = folder_response(folder)
+    publish_created("FolderCreated", result.model_dump(mode="json"))
+    return result
 
 
 @api.get(
@@ -272,7 +286,7 @@ def get_folders(request: Request, response: Response):
 @api.post(
     "/folders/{folder_id}/messages", response_model=MessageResponse, status_code=201,
     tags=["Письма"], summary="Создать письмо в папке",
-    responses={**INVALID_DATA, **NOT_FOUND},
+    responses={**INVALID_DATA, **NOT_FOUND, **PUBLICATION_ERROR},
 )
 def create_message(folder_id: UUID, data: MessageCreate, request: Request, response: Response):
     database = get_database()
@@ -285,8 +299,10 @@ def create_message(folder_id: UUID, data: MessageCreate, request: Request, respo
     }
     database.messages.insert_one(message)
     message_cache.invalidate((request.state.user_id, str(folder_id)))
+    result = message_response(message)
+    publish_created("MessageCreated", result.model_dump(mode="json"))
     response.headers["Location"] = f"/api/v1/messages/{message['_id']}"
-    return message_response(message)
+    return result
 
 
 @api.get(
@@ -314,12 +330,19 @@ def get_messages(folder_id: UUID, request: Request, response: Response):
 )
 def get_message(code: UUID, request: Request):
     database = get_database()
-    message = database.messages.find_one({"_id": str(code)})
-    if message is None:
+    projection = database.mail_read_model.find_one({"_id": f"message:{code}"})
+    if projection is not None:
+        result = MessageResponse.model_validate(projection["data"])
+    else:
+        # Consumer работает асинхронно; старые и ещё не обработанные письма
+        # читаются из исходной коллекции без изменения контракта API.
+        message = database.messages.find_one({"_id": str(code)})
+        if message is None:
+            raise HTTPException(status_code=404, detail="Письмо не найдено")
+        result = message_response(message)
+    if database.folders.find_one({"_id": str(result.folder_id), "user_id": request.state.user_id}) is None:
         raise HTTPException(status_code=404, detail="Письмо не найдено")
-    if database.folders.find_one({"_id": message["folder_id"], "user_id": request.state.user_id}) is None:
-        raise HTTPException(status_code=404, detail="Письмо не найдено")
-    return message_response(message)
+    return result
 
 
 app.include_router(api)

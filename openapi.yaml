@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Электронная почта — вариант 9
-  description: Домашнее задание 05. MongoDB, кеширование в памяти и ограничение частоты
-    входа.
+  description: Домашнее задание 06. MongoDB, RabbitMQ, события создания и простая
+    модель CQRS.
   version: 1.0.0
 paths:
   /api/v1/users:
@@ -32,6 +32,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Ресурс уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Данные сохранены, но публикация события не подтверждена
           content:
             application/json:
               schema:
@@ -288,6 +294,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Данные сохранены, но публикация события не подтверждена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
       security:
       - HTTPBearer: []
   /api/v1/folders/{folder_id}/messages:
@@ -333,6 +345,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Ресурс не найден или недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Данные сохранены, но публикация события не подтверждена
           content:
             application/json:
               schema:

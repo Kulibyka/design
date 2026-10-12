@@ -4,11 +4,43 @@ services:
     environment:
       MONGO_URI: mongodb://mongo:27017
       MONGO_DB: maildb
+      AMQP_URL: amqp://mail:mail_password@rabbitmq:5672/%2F
     depends_on:
       mongo:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     ports:
       - "8000:8000"
+  consumer:
+    build: .
+    command: ["python", "-m", "events.consumer"]
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: maildb
+      AMQP_URL: amqp://mail:mail_password@rabbitmq:5672/%2F
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+  rabbitmq:
+    image: rabbitmq:4-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: mail
+      RABBITMQ_DEFAULT_PASS: mail_password
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
   mongo:
     image: mongo:7
     environment:
@@ -47,3 +79,4 @@ services:
 volumes:
   mongodb_data:
   postgres_data:
+  rabbitmq_data:

@@ -1,9 +1,9 @@
-# Домашнее задание 05. Кеширование и rate limiting для электронной почты
+# Домашнее задание 06. События и CQRS для электронной почты
 
 Вариант 9. Приложение содержит пользователей, почтовые папки и сообщения.
 Реализованы все восемь операций варианта и вход пользователя.
 
-Используются Python 3.12, FastAPI, Pydantic, MongoDB 7 и простой драйвер PyMongo.
+Используются Python 3.12, FastAPI, Pydantic, MongoDB 7, RabbitMQ 4 и драйверы PyMongo/Pika.
 Все три сущности теперь хранятся в MongoDB. Пути API и форматы запросов и ответов
 из домашней работы 02 сохранены.
 
@@ -11,18 +11,24 @@
 Механизм работы, выбор стратегий, требования и метрики описаны в
 [performance_design.md](performance_design.md).
 
+Команды создания публикуют события в RabbitMQ. Отдельный consumer сохраняет
+проекции для чтения в MongoDB. Архитектура и механизм описаны в
+[event_driven_design.md](event_driven_design.md), события — в
+[event_catalog.md](event_catalog.md).
+
 ## Запуск API и MongoDB через Docker
 
-Из папки проекта, где находится `docker-compose.yaml`:
+Из папки проекта, где находится `docker-compose.yml`:
 
 ```bash
 docker compose up --build
 ```
 
-Запускаются сервисы `api` и `mongo`. API слушает порт 8000, MongoDB — 27017.
-API ждёт готовности MongoDB. При первом запуске в пустом MongoDB volume
+Запускаются `api`, `mongo`, `rabbitmq` и `consumer`. API слушает порт 8000,
+MongoDB — 27017, RabbitMQ — 5672. API и consumer ждут готовности MongoDB и RabbitMQ.
+При первом запуске в пустом MongoDB volume
 автоматически выполняются `mongodb/validation.js` и `mongodb/data.js`: создаются база `maildb`,
-коллекции, валидаторы, индексы и по 10 документов в каждой коллекции.
+коллекции, валидаторы, индексы и по 10 документов в `users`, `folders`, `messages`.
 
 Можно войти под логином `user01` с паролем `example-password`.
 У пользователя уже есть папка «Inbox» и одно письмо.
@@ -31,7 +37,7 @@ Swagger UI доступен по пути `/docs`, спецификация — 
 В Swagger можно зарегистрироваться, выполнить вход и вставить `access_token`
 в окно **Authorize**.
 
-Остановка сохраняет данные в volume `mongodb_data`:
+Остановка сохраняет данные MongoDB и очередь RabbitMQ в volumes:
 
 ```bash
 docker compose down
@@ -50,15 +56,16 @@ docker compose exec -T mongo mongosh --quiet maildb --file /docker-entrypoint-in
 
 ## Запуск API из Python
 
-MongoDB остаётся в Docker:
+MongoDB, RabbitMQ и consumer остаются в Docker:
 
 ```bash
-docker compose up -d mongo
+docker compose up -d --build mongo rabbitmq consumer
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 export MONGO_URI="mongodb://localhost:27017"
 export MONGO_DB="maildb"
+export AMQP_URL="amqp://mail:mail_password@localhost:5672/%2F"
 uvicorn main:app --reload
 ```
 
@@ -68,6 +75,7 @@ uvicorn main:app --reload
 .venv\Scripts\activate
 set "MONGO_URI=mongodb://localhost:27017"
 set "MONGO_DB=maildb"
+set "AMQP_URL=amqp://mail:mail_password@localhost:5672/%2F"
 ```
 
 Это же подключение используется Python по умолчанию. В контейнере API имя
@@ -81,6 +89,7 @@ set "MONGO_DB=maildb"
 | `users` | `_id`, `login`, `first_name`, `last_name`, `password_hash`, `created_at` |
 | `folders` | `_id`, `user_id`, `name`, `created_at` |
 | `messages` | `_id`, `folder_id`, `content: {subject, body}`, `recipients`, `size_bytes`, `created_at` |
+| `mail_read_model` | `_id`, `entity_type`, публичный DTO в `data`, `event_id`, `occurred_at`, `applied_at` |
 
 UUID хранятся как String, даты — Date, содержимое письма — вложенный Object,
 адрес получателя — Array из одной строки, размер текста в UTF-8 — Number.
@@ -90,6 +99,88 @@ UUID хранятся как String, даты — Date, содержимое п�
 В `mongodb/validation.js` заданы `$jsonSchema`, обязательные поля, BSON-типы,
 ограничения строк, массива и числа. Скрипт создаёт уникальные индексы логина
 и имени папки у владельца, а также индекс чтения писем папки.
+Проекции `mail_read_model` создаёт consumer по событиям новых объектов.
+
+## События и CQRS
+
+Три POST-команды после записи в MongoDB публикуют `UserCreated`, `FolderCreated`
+и `MessageCreated`. Producer отправляет persistent JSON в topic exchange
+`mail.events`; очередь `mail.read_model` подписана на `*.created`.
+Consumer строит проекции и подтверждает сообщение только после записи в БД.
+Повторная доставка не создаёт дубль благодаря upsert по UUID сущности.
+
+`GET /api/v1/messages/{code}` читает готовую проекцию. Пока её нет, он использует
+исходное письмо. Поэтому старые данные и только что созданные письма доступны
+сразу. Владелец папки проверяется в обоих случаях. Остальные GET сохраняют
+прежние запросы и кеширование. Это частичное применение CQRS с асинхронной
+синхронизацией модели чтения событиями.
+
+### Проверить взаимодействие
+
+Запустите проект, выполните регистрацию, вход, создание папки и письма по
+HTTP-примерам ниже. Посмотреть обработанные события:
+
+```bash
+docker compose logs -f consumer
+```
+
+В логах появятся `Processed UserCreated`, `Processed FolderCreated` и
+`Processed MessageCreated`. Проекции можно посмотреть в mongosh:
+
+```bash
+docker compose exec mongo mongosh maildb
+```
+
+```javascript
+db.mail_read_model.find()
+db.mail_read_model.find({entity_type: "message"})
+db.mail_read_model.findOne({_id: "message:PASTE_MESSAGE_CODE_HERE"})
+```
+
+Чтобы проверить накопление событий, остановите consumer, создайте письмо через
+API и запустите consumer снова:
+
+```bash
+docker compose stop consumer
+docker compose start consumer
+```
+
+Между двумя командами выполните POST создания письма. Пока consumer остановлен,
+событие ждёт в очереди, GET письма работает через исходную коллекцию. После
+старта consumer появится проекция.
+
+Веб-интерфейс RabbitMQ: `http://localhost:15672`, учебный логин `mail`, пароль
+`mail_password`. В разделе Queues можно проверить очередь `mail.read_model`,
+число Ready/Unacked и наличие consumer. Состояние через командную строку:
+
+```bash
+docker compose exec rabbitmq rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers
+```
+
+### Если публикация не подтверждена
+
+При недоступном RabbitMQ команда возвращает `503`, хотя объект уже сохранён
+в MongoDB. Подтверждение брокера могло потеряться, поэтому событие также могло
+быть принято. Проверяйте сохранённые данные перед повторным созданием.
+После восстановления брокера можно опубликовать событие для сохранённого письма:
+
+```bash
+docker compose exec -T api python - <<'PY'
+from database import get_database
+from events.producer import publish_event
+from main import message_response
+
+message = get_database().messages.find_one({"_id": "PASTE_MESSAGE_CODE_HERE"})
+if message is None:
+    raise ValueError("Message not found")
+event = publish_event("MessageCreated", message_response(message).model_dump(mode="json"))
+print(event["event_id"])
+PY
+```
+
+Новый event_id не создаст второй документ проекции того же письма.
+Граница гарантии at-least-once и причины повторной доставки разобраны в
+`event_driven_design.md`.
 
 ## Выполнение MongoDB-запросов
 
@@ -375,6 +466,7 @@ curl "http://localhost:8000/api/v1/messages/$CODE" -H "Authorization: Bearer $TO
 | `404 Not Found` | Пользователь не найден; папка или письмо отсутствует либо принадлежит другому пользователю |
 | `409 Conflict` | Логин занят или папка с таким именем уже существует у пользователя |
 | `429 Too Many Requests` | Исчерпаны попытки входа с данного IP в текущей минуте |
+| `503 Service Unavailable` | Объект уже сохранён, но публикация события в RabbitMQ не подтверждена |
 
 Формат ошибки:
 
@@ -391,10 +483,10 @@ curl -i http://localhost:8000/api/v1/folders
 ## Тесты и спецификация
 
 Тесты используют отдельную MongoDB-базу `maildb_test`.
-Перед тестами запустите MongoDB и примените к этой базе валидаторы:
+Перед тестами запустите MongoDB и RabbitMQ, затем примените валидаторы:
 
 ```bash
-docker compose up -d mongo
+docker compose up -d --wait mongo rabbitmq
 docker compose exec -T mongo mongosh --quiet maildb_test --file /docker-entrypoint-initdb.d/01-validation.js
 ```
 
@@ -405,10 +497,15 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Перед каждым тестом и после него документы тестовой базы очищаются.
+Перед каждым тестом и после него документы тестовой базы очищаются, включая проекции.
 Переменная `TEST_MONGO_DB` позволяет выбрать другое имя, оканчивающееся на `_test`.
 Для другого сервера задайте `MONGO_URI` перед запуском Python. Валидаторы должны
 быть применены к тестовой базе этого сервера. Рабочая `maildb` тестами не очищается.
+API-тесты подменяют публикацию, чтобы не отправлять события в рабочую очередь.
+Тесты producer/consumer используют настоящий RabbitMQ, отдельные временные
+exchange/queue и базу `mail_events_test` (переменная `TEST_EVENT_DB`, суффикс `_test`).
+Временные exchange/queue удаляются после проверок. Для другого брокера задайте
+`AMQP_URL` перед запуском Python.
 
 Тесты проверяют все операции API, поиск по маскам, уникальность логина и папки,
 невалидные данные, отсутствующие ресурсы, неверные и истёкшие токены,
@@ -418,6 +515,9 @@ python -m pytest -q
 Проверки кеша подтверждают уменьшение выборок MongoDB, TTL, инвалидацию и
 сохранение проверки доступа. Проверки rate limiting охватывают заголовки,
 блокировку, сброс окна, разные IP и параллельные запросы.
+Для событий проверяются три routing key, формат и persistent-сообщения,
+создание проекций, ack, повторная доставка, отсутствие дублей, ошибка MongoDB,
+невалидное событие и чтение проекции с контролем доступа.
 
 `openapi.yaml` содержит параметры, модели запросов/ответов, примеры и схему
 Bearer-аутентификации. Пересоздать спецификацию после изменения API:
@@ -429,6 +529,9 @@ python generate_openapi.py
 ## Ограничения учебного решения
 
 Пользователи, папки и письма сохраняются в MongoDB и переживают перезапуск API.
+Проекции и принятые RabbitMQ-сообщения также сохраняются в volumes. Между записью
+объекта и публикацией события нет общей транзакции. Read model обновляется
+асинхронно; прямые изменения через mongosh не обновляют существующую проекцию.
 Сессии, кеш и лимиты находятся в памяти: после перезапуска API нужен повторный вход.
 Нужен один процесс Uvicorn, поскольку несколько workers не разделяют это состояние.
 Письмо сохраняется в папке; доставка через SMTP и интеграция с Outlook в задание не входят.
@@ -441,6 +544,13 @@ database.py              # подключение MongoClient
 models.py                # прежние DTO запросов и ответов
 performance.py           # TTL-кеш и Fixed Window Counter в памяти
 performance_design.md    # механизм, стратегии, требования и метрики
+events/
+  schema.py              # конверт события версии 1
+  broker.py              # подключение, exchange, queue и routing
+  producer.py            # публикация с подтверждением RabbitMQ
+  consumer.py            # обработка и идемпотентная модель чтения
+event_driven_design.md   # архитектура, CQRS, гарантии и ограничения
+event_catalog.md         # три события и их payload
 mongodb/
   schema_design.md       # документная модель и обоснование связей
   validation.js          # коллекции, JSON Schema и индексы
@@ -456,7 +566,8 @@ requirements-dev.txt
 generate_openapi.py
 openapi.yaml
 tests/test_api.py
+tests/test_events.py
 Dockerfile
-docker-compose.yaml
+docker-compose.yml
 README.md
 ```
