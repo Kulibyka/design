@@ -16,6 +16,7 @@ from fastapi.security import HTTPBearer
 from pymongo.errors import DuplicateKeyError
 
 from database import get_database
+from performance import folder_cache, login_limiter, message_cache
 
 from models import (
     ErrorResponse, FolderCreate, FolderResponse, LoginRequest, MessageCreate,
@@ -25,7 +26,7 @@ from models import (
 
 app = FastAPI(
     title="Электронная почта — вариант 9",
-    description="Домашнее задание 04. Пользователи, папки и письма хранятся в MongoDB.",
+    description="Домашнее задание 05. MongoDB, кеширование в памяти и ограничение частоты входа.",
     version="1.0.0",
 )
 
@@ -39,6 +40,23 @@ INVALID_DATA = {400: {"model": ErrorResponse, "description": "Некоррект
 NOT_FOUND = {404: {"model": ErrorResponse, "description": "Ресурс не найден или недоступен"}}
 CONFLICT = {409: {"model": ErrorResponse, "description": "Ресурс уже существует"}}
 UNAUTHORIZED = {401: {"model": ErrorResponse, "description": "Требуется вход в систему"}}
+RATE_HEADERS = {
+    "X-RateLimit-Limit": {"description": "Лимит попыток входа с одного IP за минуту", "schema": {"type": "integer"}},
+    "X-RateLimit-Remaining": {"description": "Оставшиеся попытки в текущей минуте", "schema": {"type": "integer"}},
+    "X-RateLimit-Reset": {"description": "Время сброса счётчика: Unix timestamp в секундах", "schema": {"type": "integer"}},
+}
+LOGIN_RESPONSES = {
+    status: {**description, "headers": RATE_HEADERS}
+    for status, description in {
+        200: {"description": "Вход выполнен"},
+        **INVALID_DATA, **UNAUTHORIZED,
+        429: {"model": ErrorResponse, "description": "Превышен лимит попыток входа"},
+    }.items()
+}
+CACHE_RESPONSE = {200: {"headers": {
+    "X-Cache": {"description": "HIT — ответ из кеша; MISS — ответ загружен из MongoDB",
+                "schema": {"type": "string", "enum": ["HIT", "MISS"]}},
+}}}
 
 
 @app.exception_handler(RequestValidationError)
@@ -53,6 +71,15 @@ async def validation_error(request: Request, exc: RequestValidationError):
 @app.middleware("http")
 async def authentication(request: Request, call_next):
     path = request.url.path.rstrip("/")
+    rate_headers = None
+    if request.method == "POST" and path == "/api/v1/auth/login":
+        client_ip = request.client.host if request.client else "unknown"
+        allowed, rate_headers = login_limiter.check(client_ip)
+        if not allowed:
+            return JSONResponse(
+                status_code=429, content={"detail": "Too many login attempts"},
+                headers=rate_headers,
+            )
     public_request = request.method == "POST" and path in {
         "/api/v1/users", "/api/v1/auth/login",
     }
@@ -72,7 +99,10 @@ async def authentication(request: Request, call_next):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         request.state.user_id = session["user_id"]
-    return await call_next(request)
+    response = await call_next(request)
+    if rate_headers:
+        response.headers.update(rate_headers)
+    return response
 
 
 def public_user(user: dict) -> UserResponse:
@@ -138,7 +168,7 @@ def create_user(data: UserCreate, response: Response):
 @app.post(
     "/api/v1/auth/login", response_model=TokenResponse,
     tags=["Аутентификация"], summary="Войти и получить сессионный токен",
-    responses={**INVALID_DATA, **UNAUTHORIZED},
+    responses=LOGIN_RESPONSES,
 )
 def login(data: LoginRequest):
     user = find_user(data.login)
@@ -218,16 +248,25 @@ def create_folder(data: FolderCreate, request: Request):
         database.folders.insert_one(folder)
     except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Папка с таким именем уже существует")
+    folder_cache.invalidate(user_id)
     return folder_response(folder)
 
 
 @api.get(
     "/folders", response_model=list[FolderResponse],
     tags=["Папки"], summary="Получить все папки текущего пользователя",
+    responses=CACHE_RESPONSE,
 )
-def get_folders(request: Request):
-    found = get_database().folders.find({"user_id": request.state.user_id}).sort([("name", 1), ("_id", 1)])
-    return [folder_response(folder) for folder in found]
+def get_folders(request: Request, response: Response):
+    user_id = request.state.user_id
+
+    def load():
+        found = get_database().folders.find({"user_id": user_id}).sort([("name", 1), ("_id", 1)])
+        return [folder_response(folder) for folder in found]
+
+    folders, cache_status = folder_cache.get_or_load(user_id, load)
+    response.headers["X-Cache"] = cache_status
+    return folders
 
 
 @api.post(
@@ -245,6 +284,7 @@ def create_message(folder_id: UUID, data: MessageCreate, request: Request, respo
         "size_bytes": len(data.body.encode("utf-8")), "created_at": mongo_now(),
     }
     database.messages.insert_one(message)
+    message_cache.invalidate((request.state.user_id, str(folder_id)))
     response.headers["Location"] = f"/api/v1/messages/{message['_id']}"
     return message_response(message)
 
@@ -252,13 +292,19 @@ def create_message(folder_id: UUID, data: MessageCreate, request: Request, respo
 @api.get(
     "/folders/{folder_id}/messages", response_model=list[MessageResponse],
     tags=["Письма"], summary="Получить все письма в папке",
-    responses={**INVALID_DATA, **NOT_FOUND},
+    responses={**INVALID_DATA, **NOT_FOUND, **CACHE_RESPONSE},
 )
-def get_messages(folder_id: UUID, request: Request):
+def get_messages(folder_id: UUID, request: Request, response: Response):
     database = get_database()
     get_owned_folder(database, folder_id, request.state.user_id)
-    found = database.messages.find({"folder_id": str(folder_id)}).sort([("created_at", 1), ("_id", 1)])
-    return [message_response(message) for message in found]
+
+    def load():
+        found = database.messages.find({"folder_id": str(folder_id)}).sort([("created_at", 1), ("_id", 1)])
+        return [message_response(message) for message in found]
+
+    messages, cache_status = message_cache.get_or_load((request.state.user_id, str(folder_id)), load)
+    response.headers["X-Cache"] = cache_status
+    return messages
 
 
 @api.get(

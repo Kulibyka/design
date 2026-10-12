@@ -1,7 +1,8 @@
 openapi: 3.1.0
 info:
   title: Электронная почта — вариант 9
-  description: Домашнее задание 04. Пользователи, папки и письма хранятся в MongoDB.
+  description: Домашнее задание 05. MongoDB, кеширование в памяти и ограничение частоты
+    входа.
   version: 1.0.0
 paths:
   /api/v1/users:
@@ -101,19 +102,77 @@ paths:
         required: true
       responses:
         '200':
-          description: Successful Response
+          description: Вход выполнен
+          headers:
+            X-RateLimit-Limit:
+              description: Лимит попыток входа с одного IP за минуту
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Оставшиеся попытки в текущей минуте
+              schema:
+                type: integer
+            X-RateLimit-Reset:
+              description: 'Время сброса счётчика: Unix timestamp в секундах'
+              schema:
+                type: integer
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
         '400':
           description: Некорректные данные
+          headers:
+            X-RateLimit-Limit:
+              description: Лимит попыток входа с одного IP за минуту
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Оставшиеся попытки в текущей минуте
+              schema:
+                type: integer
+            X-RateLimit-Reset:
+              description: 'Время сброса счётчика: Unix timestamp в секундах'
+              schema:
+                type: integer
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Требуется вход в систему
+          headers:
+            X-RateLimit-Limit:
+              description: Лимит попыток входа с одного IP за минуту
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Оставшиеся попытки в текущей минуте
+              schema:
+                type: integer
+            X-RateLimit-Reset:
+              description: 'Время сброса счётчика: Unix timestamp в секундах'
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Превышен лимит попыток входа
+          headers:
+            X-RateLimit-Limit:
+              description: Лимит попыток входа с одного IP за минуту
+              schema:
+                type: integer
+            X-RateLimit-Remaining:
+              description: Оставшиеся попытки в текущей минуте
+              schema:
+                type: integer
+            X-RateLimit-Reset:
+              description: 'Время сброса счётчика: Unix timestamp в секундах'
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -170,6 +229,14 @@ paths:
       responses:
         '200':
           description: Successful Response
+          headers:
+            X-Cache:
+              description: HIT — ответ из кеша; MISS — ответ загружен из MongoDB
+              schema:
+                type: string
+                enum:
+                - HIT
+                - MISS
           content:
             application/json:
               schema:
@@ -295,6 +362,14 @@ paths:
                 items:
                   $ref: '#/components/schemas/MessageResponse'
                 title: Response Get Messages Api V1 Folders  Folder Id  Messages Get
+          headers:
+            X-Cache:
+              description: HIT — ответ из кеша; MISS — ответ загружен из MongoDB
+              schema:
+                type: string
+                enum:
+                - HIT
+                - MISS
         '401':
           description: Требуется вход в систему
           content:

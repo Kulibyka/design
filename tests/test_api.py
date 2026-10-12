@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
@@ -10,6 +11,8 @@ import yaml
 
 from database import get_database, mongo_client
 from main import app, find_user, password_hasher, sessions
+from performance import folder_cache, login_limiter, message_cache
+import performance
 
 
 @pytest.fixture(scope="session")
@@ -29,11 +32,17 @@ def client(monkeypatch, test_database_name):
     for collection in ("messages", "folders", "users"):
         get_database()[collection].delete_many({})
     sessions.clear()
+    folder_cache.clear()
+    message_cache.clear()
+    login_limiter.clear()
     with TestClient(app) as test_client:
         yield test_client
     for collection in ("messages", "folders", "users"):
         get_database()[collection].delete_many({})
     sessions.clear()
+    folder_cache.clear()
+    message_cache.clear()
+    login_limiter.clear()
 
 
 def count_records(table):
@@ -325,3 +334,146 @@ def test_mongo_schema_validation(client):
         })
     assert count_records("folders") == 1
     assert count_records("messages") == 0
+
+
+def test_folder_cache_hits_expiry_and_invalidation(client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(performance, "monotonic", lambda: now[0])
+    register(client)
+    headers = authorization(client)
+    queries = []
+    collection_type = type(get_database().folders)
+    original_find = collection_type.find
+
+    def counted_find(collection, *args, **kwargs):
+        if collection.name == "folders":
+            queries.append(collection.name)
+        return original_find(collection, *args, **kwargs)
+
+    monkeypatch.setattr(collection_type, "find", counted_find)
+    first = client.get("/api/v1/folders", headers=headers)
+    second = client.get("/api/v1/folders", headers=headers)
+    assert first.json() == second.json() == []
+    assert first.headers["x-cache"] == "MISS"
+    assert second.headers["x-cache"] == "HIT"
+    assert len(queries) == 1
+
+    folder = create_folder(client, headers)
+    refreshed = client.get("/api/v1/folders", headers=headers)
+    assert refreshed.headers["x-cache"] == "MISS"
+    assert refreshed.json() == [folder]
+    assert len(queries) == 2
+    assert client.get("/api/v1/folders", headers=headers).headers["x-cache"] == "HIT"
+    now[0] += folder_cache.ttl_seconds
+    expired = client.get("/api/v1/folders", headers=headers)
+    assert expired.headers["x-cache"] == "MISS"
+    assert expired.json() == [folder]
+    assert len(queries) == 3
+
+
+def test_message_cache_hits_expiry_and_invalidation(client, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(performance, "monotonic", lambda: now[0])
+    register(client)
+    headers = authorization(client)
+    folder = create_folder(client, headers)
+    path = f"/api/v1/folders/{folder['id']}/messages"
+    queries = []
+    collection_type = type(get_database().messages)
+    original_find = collection_type.find
+
+    def counted_find(collection, *args, **kwargs):
+        if collection.name == "messages":
+            queries.append(collection.name)
+        return original_find(collection, *args, **kwargs)
+
+    monkeypatch.setattr(collection_type, "find", counted_find)
+    first = client.get(path, headers=headers)
+    second = client.get(path, headers=headers)
+    assert first.json() == second.json() == []
+    assert first.headers["x-cache"] == "MISS"
+    assert second.headers["x-cache"] == "HIT"
+    assert len(queries) == 1
+
+    letter = create_message(client, headers, folder["id"])
+    refreshed = client.get(path, headers=headers)
+    assert refreshed.headers["x-cache"] == "MISS"
+    assert refreshed.json() == [letter]
+    assert len(queries) == 2
+    assert client.get(path, headers=headers).headers["x-cache"] == "HIT"
+    now[0] += message_cache.ttl_seconds
+    expired = client.get(path, headers=headers)
+    assert expired.headers["x-cache"] == "MISS"
+    assert expired.json() == [letter]
+    assert len(queries) == 3
+
+
+def test_cached_data_still_requires_authentication_and_ownership(client):
+    register(client)
+    first_headers = authorization(client)
+    folder = create_folder(client, first_headers)
+    letter = create_message(client, first_headers, folder["id"])
+    path = f"/api/v1/folders/{folder['id']}/messages"
+    client.get("/api/v1/folders", headers=first_headers)
+    client.get(path, headers=first_headers)
+    assert client.get(path, headers=first_headers).headers["x-cache"] == "HIT"
+    assert client.get(path).status_code == 401
+    assert client.get("/api/v1/folders").status_code == 401
+
+    second_user = register(client, "anna", "Anna", "Petrova").json()
+    second_headers = authorization(client, "anna")
+    assert client.get("/api/v1/folders", headers=second_headers).json() == []
+    assert client.get(path, headers=second_headers).status_code == 404
+    get_database().folders.update_one({"_id": folder["id"]}, {"$set": {"user_id": second_user["id"]}})
+    assert client.get(path, headers=first_headers).status_code == 404
+    second_result = client.get(path, headers=second_headers)
+    assert second_result.headers["x-cache"] == "MISS"
+    assert second_result.json() == [letter]
+
+
+def test_login_rate_limit_headers_blocking_and_reset(client, monkeypatch):
+    now = [1800000000.0]
+    monkeypatch.setattr(performance, "time", lambda: now[0])
+    register(client)
+    valid = {"login": "ivan", "password": "example-password"}
+    first = client.post("/api/v1/auth/login", json=valid)
+    assert first.status_code == 200
+    assert first.headers["x-ratelimit-limit"] == "10"
+    assert first.headers["x-ratelimit-remaining"] == "9"
+    assert first.headers["x-ratelimit-reset"] == "1800000060"
+    malformed = client.post("/api/v1/auth/login", content="{", headers={"Content-Type": "application/json"})
+    assert malformed.status_code == 400
+    assert malformed.headers["x-ratelimit-remaining"] == "8"
+    for remaining in range(7, -1, -1):
+        result = client.post("/api/v1/auth/login", json={"login": "missing", "password": "wrong"})
+        assert result.status_code == 401
+        assert result.headers["x-ratelimit-remaining"] == str(remaining)
+
+    with monkeypatch.context() as limited:
+        def forbidden_lookup(login):
+            pytest.fail("Blocked login must not access MongoDB or verify passwords")
+        limited.setattr("main.find_user", forbidden_lookup)
+        blocked = client.post("/api/v1/auth/login", json=valid)
+        assert blocked.status_code == 429
+        assert blocked.json() == {"detail": "Too many login attempts"}
+        assert blocked.headers["x-ratelimit-limit"] == "10"
+        assert blocked.headers["x-ratelimit-remaining"] == "0"
+        assert blocked.headers["x-ratelimit-reset"] == "1800000060"
+    with TestClient(app, client=("203.0.113.2", 50000)) as second_client:
+        independent = second_client.post("/api/v1/auth/login", json=valid)
+        assert independent.status_code == 200
+        assert independent.headers["x-ratelimit-remaining"] == "9"
+    now[0] += 60
+    reset = client.post("/api/v1/auth/login", json=valid)
+    assert reset.status_code == 200
+    assert reset.headers["x-ratelimit-remaining"] == "9"
+    assert reset.headers["x-ratelimit-reset"] == "1800000120"
+
+
+def test_rate_limit_does_not_exceed_limit_with_parallel_requests(monkeypatch):
+    monkeypatch.setattr(performance, "time", lambda: 1800000000.0)
+    limiter = performance.FixedWindowLimiter(limit=10, window_seconds=60)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: limiter.check("203.0.113.1"), range(40)))
+    assert sum(allowed for allowed, _ in results) == 10
+    assert all(headers["X-RateLimit-Remaining"] == "0" for allowed, headers in results if not allowed)
