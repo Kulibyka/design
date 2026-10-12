@@ -1,0 +1,583 @@
+openapi: 3.1.0
+info:
+  title: Электронная почта — вариант 9
+  description: Домашнее задание 02. Пользователи, папки и письма хранятся в памяти.
+  version: 1.0.0
+paths:
+  /api/v1/users:
+    post:
+      tags:
+      - Пользователи
+      summary: Создать пользователя (регистрация)
+      operationId: create_user_api_v1_users_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Ресурс уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags:
+      - Пользователи
+      summary: Найти пользователей по маске имени и фамилии
+      operationId: search_users_api_v1_users_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: first_name_mask
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: 'Маска имени: * — любое число символов, ? — один'
+          title: First Name Mask
+        description: 'Маска имени: * — любое число символов, ? — один'
+      - name: last_name_mask
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: 'Маска фамилии: * — любое число символов, ? — один'
+          title: Last Name Mask
+        description: 'Маска фамилии: * — любое число символов, ? — один'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserResponse'
+                title: Response Search Users Api V1 Users Get
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/login:
+    post:
+      tags:
+      - Аутентификация
+      summary: Войти и получить сессионный токен
+      operationId: login_api_v1_auth_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/users/by-login:
+    get:
+      tags:
+      - Пользователи
+      summary: Найти пользователя по логину
+      operationId: get_user_by_login_api_v1_users_by_login_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: login
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          description: Логин без учёта регистра
+          title: Login
+        description: Логин без учёта регистра
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ресурс не найден или недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/folders:
+    get:
+      tags:
+      - Папки
+      summary: Получить все папки текущего пользователя
+      operationId: get_folders_api_v1_folders_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/FolderResponse'
+                type: array
+                title: Response Get Folders Api V1 Folders Get
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - HTTPBearer: []
+    post:
+      tags:
+      - Папки
+      summary: Создать почтовую папку
+      operationId: create_folder_api_v1_folders_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FolderCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderResponse'
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Ресурс уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - HTTPBearer: []
+  /api/v1/folders/{folder_id}/messages:
+    post:
+      tags:
+      - Письма
+      summary: Создать письмо в папке
+      operationId: create_message_api_v1_folders__folder_id__messages_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Folder Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ресурс не найден или недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags:
+      - Письма
+      summary: Получить все письма в папке
+      operationId: get_messages_api_v1_folders__folder_id__messages_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Folder Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MessageResponse'
+                title: Response Get Messages Api V1 Folders  Folder Id  Messages Get
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ресурс не найден или недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/messages/{code}:
+    get:
+      tags:
+      - Письма
+      summary: Получить письмо по коду
+      operationId: get_message_api_v1_messages__code__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          description: Требуется вход в систему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Некорректные данные
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Ресурс не найден или недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    ErrorResponse:
+      properties:
+        detail:
+          type: string
+          title: Detail
+      type: object
+      required:
+      - detail
+      title: ErrorResponse
+      examples:
+      - detail: Папка не найдена
+    FolderCreate:
+      properties:
+        name:
+          type: string
+          minLength: 1
+          title: Name
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      title: FolderCreate
+      examples:
+      - name: Учёба
+    FolderResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        name:
+          type: string
+          title: Name
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - user_id
+      - name
+      - created_at
+      title: FolderResponse
+      examples:
+      - created_at: '2026-10-12T12:00:00Z'
+        id: 22222222-2222-4222-8222-222222222222
+        name: Учёба
+        user_id: 11111111-1111-4111-8111-111111111111
+    LoginRequest:
+      properties:
+        login:
+          type: string
+          minLength: 1
+          title: Login
+        password:
+          type: string
+          title: Password
+      additionalProperties: false
+      type: object
+      required:
+      - login
+      - password
+      title: LoginRequest
+      examples:
+      - login: ivan
+        password: example-password
+    MessageCreate:
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          title: Subject
+        body:
+          type: string
+          minLength: 1
+          title: Body
+        recipient_address:
+          type: string
+          format: email
+          title: Recipient Address
+      additionalProperties: false
+      type: object
+      required:
+      - subject
+      - body
+      - recipient_address
+      title: MessageCreate
+      examples:
+      - body: Отправляю описание архитектуры.
+        recipient_address: teacher@example.com
+        subject: Домашнее задание
+    MessageResponse:
+      properties:
+        code:
+          type: string
+          format: uuid
+          title: Code
+        folder_id:
+          type: string
+          format: uuid
+          title: Folder Id
+        subject:
+          type: string
+          title: Subject
+        body:
+          type: string
+          title: Body
+        recipient_address:
+          type: string
+          format: email
+          title: Recipient Address
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - code
+      - folder_id
+      - subject
+      - body
+      - recipient_address
+      - created_at
+      title: MessageResponse
+      examples:
+      - body: Отправляю описание архитектуры.
+        code: 33333333-3333-4333-8333-333333333333
+        created_at: '2026-10-12T12:00:00Z'
+        folder_id: 22222222-2222-4222-8222-222222222222
+        recipient_address: teacher@example.com
+        subject: Домашнее задание
+    TokenResponse:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        token_type:
+          type: string
+          const: bearer
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - access_token
+      - expires_in
+      title: TokenResponse
+      examples:
+      - access_token: example-session-token
+        expires_in: 3600
+        token_type: bearer
+    UserCreate:
+      properties:
+        login:
+          type: string
+          minLength: 1
+          title: Login
+        first_name:
+          type: string
+          minLength: 1
+          title: First Name
+        last_name:
+          type: string
+          minLength: 1
+          title: Last Name
+        password:
+          type: string
+          title: Password
+      additionalProperties: false
+      type: object
+      required:
+      - login
+      - first_name
+      - last_name
+      - password
+      title: UserCreate
+      examples:
+      - first_name: Иван
+        last_name: Петров
+        login: ivan
+        password: example-password
+    UserResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        login:
+          type: string
+          title: Login
+        first_name:
+          type: string
+          title: First Name
+        last_name:
+          type: string
+          title: Last Name
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - login
+      - first_name
+      - last_name
+      - created_at
+      title: UserResponse
+      examples:
+      - created_at: '2026-10-12T12:00:00Z'
+        first_name: Иван
+        id: 11111111-1111-4111-8111-111111111111
+        last_name: Петров
+        login: ivan
+  securitySchemes:
+    HTTPBearer:
+      type: http
+      scheme: bearer
