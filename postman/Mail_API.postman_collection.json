@@ -1,0 +1,1326 @@
+{
+  "info": {
+    "_postman_id": "fffccf5a-02f0-412b-919a-0e9a0629f516",
+    "name": "Mail API — вариант 9 (задания 02–06)",
+    "description": "Запросы API и проверки ошибок, доступа, кеша и лимита входа. Запустите приложение, импортируйте файл, выберите No Environment. Переменная base_url по умолчанию http://localhost:8000. Выполняйте папки 01–04 по порядку или через Runner с одной итерацией. Регистрация создаёт уникальный логин; token, folder_id и message_code сохраняются автоматически. Проверки кеша требуют задания 05 или 06 и выполнения подряд. Для лимита выберите только папку 05 и запустите 11 итераций. При 429 на начальном входе дождитесь X-RateLimit-Reset. При 503 проверьте RabbitMQ: объект мог уже сохраниться. Создание объектов в задании 06 запускает публикацию событий; обработку смотрите в логах consumer. Запросы создают демонстрационные данные, удаления в API нет.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "login",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "password",
+      "value": "example-password",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "folder_name",
+      "value": "Study",
+      "type": "string"
+    },
+    {
+      "key": "folder_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "message_code",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cache_folder_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cache_folder_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cache_message_code",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "other_login",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "other_user_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "other_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "invalid_token",
+      "value": "invalid-token",
+      "type": "string"
+    },
+    {
+      "key": "rate_reset",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rate_remaining",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "01. Основной сценарий — восемь операций и вход",
+      "description": "Подходит всем версиям API, начиная с задания 02. Выполняйте запросы по порядку.",
+      "item": [
+        {
+          "name": "01. Создать пользователя",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/users",
+            "description": "Начните здесь. При каждом запуске создаётся уникальный логин; переменные прошлого сценария очищаются.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{login}}\",\n  \"first_name\": \"Ivan\",\n  \"last_name\": \"Petrov\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"login\", \"postman_\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "[\"token\", \"user_id\", \"folder_id\", \"message_code\", \"cache_folder_id\", \"cache_message_code\",",
+                  " \"other_token\", \"other_user_id\", \"other_login\", \"rate_reset\", \"rate_remaining\"].forEach(function (key) {",
+                  "    pm.collectionVariables.set(key, \"\");",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "",
+                  "var responseBody = pm.response.json();",
+                  "pm.test(\"Public user fields\", function () {",
+                  "    pm.expect(responseBody.login).to.eql(pm.collectionVariables.get(\"login\"));",
+                  "    pm.expect(responseBody.first_name).to.eql(\"Ivan\");",
+                  "    pm.expect(responseBody.last_name).to.eql(\"Petrov\");",
+                  "    pm.expect(responseBody).not.to.have.property(\"password\");",
+                  "    pm.expect(responseBody).not.to.have.property(\"password_hash\");",
+                  "});",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"user_id\", responseBody.id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02. Войти и сохранить токен",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/auth/login",
+            "description": "Токен автоматически сохраняется в переменную token и используется последующими запросами.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{login}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "",
+                  "var responseBody = pm.response.json();",
+                  "pm.test(\"Bearer session\", function () {",
+                  "    pm.expect(responseBody.access_token).to.be.a(\"string\").and.not.empty;",
+                  "    pm.expect(responseBody.token_type).to.eql(\"bearer\");",
+                  "    pm.expect(responseBody.expires_in).to.eql(3600);",
+                  "});",
+                  "if (pm.response.code === 200) pm.collectionVariables.set(\"token\", responseBody.access_token);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03. Найти пользователя по логину",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/users/by-login?login={{login}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test(\"Created user found\", function () {",
+                  "    pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"user_id\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04. Найти пользователей по маскам",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/users?first_name_mask=Iv%2A&last_name_mask=Pet%3Fov",
+            "description": "Маски Iv* и Pet?ov соответствуют имени Ivan и фамилии Petrov."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test(\"Masks include our user\", function () {",
+                  "    var responseBody = pm.response.json();",
+                  "    pm.expect(responseBody).to.be.an(\"array\");",
+                  "    pm.expect(responseBody.some(function (user) { return user.id === pm.collectionVariables.get(\"user_id\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05. Создать папку",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{folder_name}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "",
+                  "var responseBody = pm.response.json();",
+                  "pm.test(\"Owned folder\", function () {",
+                  "    pm.expect(responseBody.user_id).to.eql(pm.collectionVariables.get(\"user_id\"));",
+                  "    pm.expect(responseBody.name).to.eql(pm.collectionVariables.get(\"folder_name\"));",
+                  "});",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"folder_id\", responseBody.id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "06. Получить все папки",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test(\"Created folder listed\", function () {",
+                  "    pm.expect(pm.response.json().some(function (folder) { return folder.id === pm.collectionVariables.get(\"folder_id\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "07. Создать письмо в папке",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders/{{folder_id}}/messages",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"Homework\",\n  \"body\": \"Project description.\",\n  \"recipient_address\": \"teacher@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "",
+                  "var responseBody = pm.response.json();",
+                  "pm.test(\"Message in our folder\", function () {",
+                  "    pm.expect(responseBody.folder_id).to.eql(pm.collectionVariables.get(\"folder_id\"));",
+                  "    pm.expect(responseBody.subject).to.eql(\"Homework\");",
+                  "    pm.expect(responseBody.body).to.eql(\"Project description.\");",
+                  "    pm.expect(responseBody.recipient_address).to.eql(\"teacher@example.com\");",
+                  "    pm.expect(pm.response.headers.get(\"Location\")).to.eql(\"/api/v1/messages/\" + responseBody.code);",
+                  "});",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"message_code\", responseBody.code);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "08. Получить все письма папки",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/{{folder_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test(\"Created message listed\", function () {",
+                  "    pm.expect(pm.response.json().some(function (message) { return message.code === pm.collectionVariables.get(\"message_code\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "09. Получить письмо по коду",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/messages/{{message_code}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test(\"Message found by code\", function () {",
+                  "    var responseBody = pm.response.json();",
+                  "    pm.expect(responseBody.code).to.eql(pm.collectionVariables.get(\"message_code\"));",
+                  "    pm.expect(responseBody.folder_id).to.eql(pm.collectionVariables.get(\"folder_id\"));",
+                  "    pm.expect(responseBody.subject).to.eql(\"Homework\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02. Кеш и инвалидация — задания 05–06",
+      "description": "Сначала выполните папку 01. Запускайте через Runner подряд: TTL папок 30 секунд, писем 15 секунд.",
+      "item": [
+        {
+          "name": "01. Создать папку и сбросить кеш папок",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{cache_folder_name}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"cache_folder_name\", \"Cache_\" + pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"cache_folder_id\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02. Папки после создания — MISS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"X-Cache: MISS\", function () { pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"MISS\"); });",
+                  "",
+                  "pm.test(\"New cache folder listed\", function () {",
+                  "    pm.expect(pm.response.json().some(function (folder) { return folder.id === pm.collectionVariables.get(\"cache_folder_id\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03. Повторное чтение папок — HIT",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"X-Cache: HIT\", function () { pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"HIT\"); });",
+                  "",
+                  "pm.test(\"New cache folder listed\", function () {",
+                  "    pm.expect(pm.response.json().some(function (folder) { return folder.id === pm.collectionVariables.get(\"cache_folder_id\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04. Пустая папка — MISS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/{{cache_folder_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"X-Cache: MISS\", function () { pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"MISS\"); });",
+                  "pm.test(\"Empty list\", function () { pm.expect(pm.response.json()).to.eql([]); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05. Повторное чтение пустой папки — HIT",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/{{cache_folder_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"X-Cache: HIT\", function () { pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"HIT\"); });",
+                  "pm.test(\"Empty list\", function () { pm.expect(pm.response.json()).to.eql([]); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "06. Создать письмо и сбросить кеш писем",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders/{{cache_folder_id}}/messages",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"Homework\",\n  \"body\": \"Project description.\",\n  \"recipient_address\": \"teacher@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"cache_message_code\", pm.response.json().code);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "07. Письма после создания — MISS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/{{cache_folder_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"X-Cache: MISS\", function () { pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"MISS\"); });",
+                  "",
+                  "pm.test(\"New cache message listed\", function () {",
+                  "    pm.expect(pm.response.json().some(function (message) { return message.code === pm.collectionVariables.get(\"cache_message_code\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "08. Повторное чтение писем — HIT",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/{{cache_folder_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"X-Cache: HIT\", function () { pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"HIT\"); });",
+                  "",
+                  "pm.test(\"New cache message listed\", function () {",
+                  "    pm.expect(pm.response.json().some(function (message) { return message.code === pm.collectionVariables.get(\"cache_message_code\"); })).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03. Ошибки 400, 401, 404, 409",
+      "description": "Сначала выполните папку 01. Неверный вход расходует одну попытку из лимита.",
+      "item": [
+        {
+          "name": "01. Папки без токена — 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02. Папки с неверным токеном — 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{invalid_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03. Пустое имя пользователя — 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/users",
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{login}}\",\n  \"first_name\": \"\",\n  \"last_name\": \"Petrov\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04. Пустое название папки — 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \" \"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05. Неверный адрес получателя — 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders/{{folder_id}}/messages",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"Homework\",\n  \"body\": \"Project description.\",\n  \"recipient_address\": \"wrong-address\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "06. Неверный UUID папки — 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/not-a-uuid/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "07. Отсутствующая папка — 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/00000000-0000-4000-8000-000000000000/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "08. Отсутствующее письмо — 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/messages/00000000-0000-4000-8000-000000000000",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "09. Повторная регистрация — 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/users",
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{login}}\",\n  \"first_name\": \"Ivan\",\n  \"last_name\": \"Petrov\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "10. Повторное название папки — 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{folder_name}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 409\", function () { pm.response.to.have.status(409); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "11. Неверный пароль — 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/auth/login",
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{login}}\",\n  \"password\": \"incorrect-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", function () { pm.response.to.have.status(401); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "12. Поиск без масок — 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/users",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", function () { pm.response.to.have.status(400); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04. Проверка доступа другого пользователя",
+      "description": "Сначала выполните папку 01. Токен владельца не заменяется; other_token используется только в этой папке.",
+      "item": [
+        {
+          "name": "01. Создать другого пользователя",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/users",
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{other_login}}\",\n  \"first_name\": \"Anna\",\n  \"last_name\": \"Petrova\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"other_login\", \"postman_other_\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"other_token\", \"\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 201\", function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"other_user_id\", pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02. Войти другим пользователем",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/auth/login",
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"{{other_login}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) pm.collectionVariables.set(\"other_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03. Чужая папка — 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders/{{folder_id}}/messages",
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{other_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04. Чужое письмо — 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/messages/{{message_code}}",
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{other_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 404\", function () { pm.response.to.have.status(404); });",
+                  "pm.test(\"JSON error detail\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05. Папки другого пользователя пусты",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/folders",
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{other_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Empty list\", function () { pm.expect(pm.response.json()).to.eql([]); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05. Лимит входа — задания 05–06",
+      "description": "Для проверки 429 выберите только эту папку в Runner, Iterations = 11 и Delay = 0. Все попытки одного IP в текущей минуте учитываются.",
+      "item": [
+        {
+          "name": "01. Неверный вход: повторить 11 раз через Runner",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/auth/login",
+            "description": "Выберите только папку 05 в Runner, Iterations = 11, Delay = 0. Запрос проверяет 401/429, заголовки и уменьшение счётчика. Предыдущие попытки тоже учитываются. После достижения лимита ожидается 429. Если серия пересекла границу минуты, повторите её в начале нового окна.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"login\": \"missing-user\",\n  \"password\": \"wrong-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var remaining = Number(pm.response.headers.get(\"X-RateLimit-Remaining\"));",
+                  "var reset = Number(pm.response.headers.get(\"X-RateLimit-Reset\"));",
+                  "pm.test(\"Login rejected or rate limited\", function () { pm.expect([401, 429]).to.include(code); });",
+                  "pm.test(\"Rate limit headers\", function () {",
+                  "    pm.expect(pm.response.headers.get(\"X-RateLimit-Limit\")).to.eql(\"10\");",
+                  "    pm.expect(Number.isInteger(remaining)).to.eql(true);",
+                  "    pm.expect(remaining).to.be.within(0, 9);",
+                  "    pm.expect(Number.isInteger(reset) && reset > 0).to.eql(true);",
+                  "});",
+                  "var previousReset = Number(pm.collectionVariables.get(\"rate_reset\"));",
+                  "var previousRemaining = Number(pm.collectionVariables.get(\"rate_remaining\"));",
+                  "if (previousReset === reset && pm.collectionVariables.get(\"rate_remaining\") !== \"\") {",
+                  "    pm.test(\"Counter and status follow previous attempt\", function () {",
+                  "        pm.expect(code).to.eql(previousRemaining > 0 ? 401 : 429);",
+                  "        pm.expect(remaining).to.eql(Math.max(0, previousRemaining - 1));",
+                  "    });",
+                  "}",
+                  "if (code === 429) {",
+                  "    pm.test(\"Limit exceeded\", function () {",
+                  "        pm.expect(remaining).to.eql(0);",
+                  "        pm.expect(pm.response.json().detail).to.eql(\"Too many login attempts\");",
+                  "    });",
+                  "} else {",
+                  "    pm.test(\"Invalid credentials\", function () { pm.expect(pm.response.json().detail).to.be.a(\"string\"); });",
+                  "}",
+                  "pm.collectionVariables.set(\"rate_reset\", String(reset));",
+                  "pm.collectionVariables.set(\"rate_remaining\", String(remaining));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ]
+}
